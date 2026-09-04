@@ -76,7 +76,7 @@ INPUT_FOLDER/
 2. Run TotalSpineSeg to get generate the segmentations in the 1mm isotropic space
 > Perform this for both your control group and test group
 ```
-totalspineseg RAW_FOLDER TOTALSPINESEG_FOLDER --iso
+totalspineseg INPUT_FOLDER TOTALSPINESEG_FOLDER --iso
 ```
 
 3. Run SpineReport to generate the reports
@@ -85,6 +85,49 @@ spinereport -t TEST_TOTALSPINESEG_FOLDER -c CONTROL_TOTALSPINESEG_FOLDER -o repo
 ```
 
 The **test subjects** corresponds to the subjects for which a report will be generated. The **control subjects** corresponds to the violin plots shown in gray in the background (see report examples at the top of the README.). If you want to generate reports for all your subjects/scans, you can specify the same path for both **TEST_TOTALSPINESEG_FOLDER** and **CONTROL_TOTALSPINESEG_FOLDER**.
+
+## Using your own segmentations
+
+SpineReport can also work with segmentations you produced yourself or with other automatic tools (spinal cord, canal, vertebrae, discs), and fall back on TotalSpineSeg for anything you don't provide. Any per-structure folder passed through the flags below overrides its counterpart in `--test-dir` / `--control-dir`; you can mix and match freely. Be careful, the segmentations must be in the same 1mm isotropic space as the input images in TOTALSPINESEG_FOLDER/input. To ensure that all segmentations are in the correct space, you should run TotalSpineSeg with the `--iso` flag on your raw images, then compute your segmentations onto the `TOTALSPINESEG_FOLDER/input` folder and save them in a separate segmentation folder.
+
+### Folder layout
+
+All segmentation folders must be **flat** (no per-subject subdirectories) and every file must share the same BIDS-style basename as the raw image (e.g. `<canal-seg-folder>/sub-001_T2w.nii.gz`).
+
+### Segmentation expectations
+
+- **Spinal cord (`--*-sc-seg-dir`)** and **canal (`--*-canal-seg-dir`)** must be **binary** (any non-zero voxel is treated as foreground). The CSF region is derived as *canal minus SC*.
+- **Vertebrae (`--*-vertebrae-seg-dir`)** and **discs (`--*-discs-seg-dir`)** must be multi-label (one integer per anatomical level). Each folder must also contain a `map.json` that names every label in your segmentation using the [tss_map.json](https://github.com/neuropoly/totalspineseg/blob/main/totalspineseg/resources/labels_maps/tss_map.json) keys:
+```json
+// VERTEBRAE/map.json — keys are tss_map.json names, values are YOUR integer labels
+{
+  "C1": 1, "C2": 2, "C3": 3, "C4": 4, "C5": 5, "C6": 6, "C7": 7,
+  "T1": 8, "T2": 9, "T12": 19,
+  "L1": 20, "L5": 24,
+  "sacrum": 25
+}
+```
+```json
+// DISCS/map.json
+{
+  "C2-C3": 1, "C3-C4": 2, "C6-C7": 5,
+  "T1-T2": 7, "T12-L1": 18,
+  "L1-L2": 19, "L5-S": 23
+}
+```
+SpineReport uses these `map.json` files to remap your segmentation values to the canonical TotalSpineSeg label scheme before extracting metrics.
+
+- **Landmark labels (`--*-labels-dir`)** are single-voxel labels at the posterior tip of each disc (same idea as TotalSpineSeg's `step1_levels/`). Their integer values must follow the [levels_maps.json](https://github.com/neuropoly/totalspineseg/blob/main/totalspineseg/resources/labels_maps/levels_maps.json) convention (`C1=1`, `C1-C2=2`, ..., `L5-S=25`) see [convention](https://spinalcordtoolbox.com/stable/user_section/tutorials/vertebral-labeling/labeling-conventions.html).
+
+### Example
+
+Mixing sources — reuse TotalSpineSeg for everything except your own vertebrae segmentation for the test group:
+```
+spinereport \
+    -t TEST_TOTALSPINESEG_FOLDER --test-vertebrae-seg-dir my_test/vertebrae \
+    -c CONTROL_TOTALSPINESEG_FOLDER \
+    -o reports
+```
 
 ## How to generate group analysis ?
 

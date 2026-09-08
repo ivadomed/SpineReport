@@ -117,9 +117,7 @@ def main():
             spinereport -t test_totalspineseg -c control_totalspineseg -o reports
 
             # totalspineseg with custom SC segmentation
-            spinereport \\
-                --test-sc-seg-dir test/sc --control-sc-seg-dir ctrl/sc \\
-                -t test_totalspineseg -c control_totalspineseg -o reports
+            spinereport -t test_totalspineseg -c control_totalspineseg --test-sc-seg-dir test/sc --control-sc-seg-dir ctrl/sc -o reports 
 
         '''),
         formatter_class=argparse.RawTextHelpFormatter

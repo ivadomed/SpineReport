@@ -337,7 +337,11 @@ def _assemble_combined_seg(seg_paths, mapping):
             tss_val = mapping.get(name)
             if tss_val is None or not (10 < tss_val < 51):
                 continue
-            combined_img.data[vert_img.data == user_label] = tss_val
+            mask = vert_img.data == user_label
+            if not np.any(mask):
+                print(f'Warning: vertebrae label {user_label} for "{name}" not found in override segmentation.')
+                continue
+            combined_img.data[mask] = tss_val
 
     # Discs override: clear the disc label range then paint remapped labels.
     if seg_paths.get('discs') is not None:
@@ -349,7 +353,11 @@ def _assemble_combined_seg(seg_paths, mapping):
             tss_val = mapping.get(name)
             if tss_val is None or not (63 <= tss_val <= 100):
                 continue
-            combined_img.data[disc_img.data == user_label] = tss_val
+            mask = disc_img.data == user_label
+            if not np.any(mask):
+                print(f'Warning: disc label {user_label} for "{name}" not found in override segmentation.')
+                continue
+            combined_img.data[mask] = tss_val
 
     return combined_img
 

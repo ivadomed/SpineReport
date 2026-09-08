@@ -118,23 +118,11 @@ def main():
             # totalspineseg only
             spinereport -t test_totalspineseg -c control_totalspineseg -o reports
 
-            # totalspineseg with custom segmentations
+            # totalspineseg with custom SC segmentation
             spinereport \\
-                --test-sc-seg-dir test/sc --test-canal-seg-dir test/canal \\
-                --test-vertebrae-seg-dir test/vert --test-discs-seg-dir test/disc \\
-                --control-sc-seg-dir ctrl/sc --control-canal-seg-dir ctrl/canal \\
-                --control-vertebrae-seg-dir ctrl/vert --control-discs-seg-dir ctrl/disc \\
-                -o reports
+                --test-sc-seg-dir test/sc --control-sc-seg-dir ctrl/sc \\
+                -t test_totalspineseg -c control_totalspineseg -o reports
 
-            # fully custom (no totalspineseg), all inputs in 1 mm isotropic space
-            spinereport \\
-                --test-images-dir test/img --test-labels-dir test/lbl \\
-                --test-sc-seg-dir test/sc --test-canal-seg-dir test/canal \\
-                --test-vertebrae-seg-dir test/vert --test-discs-seg-dir test/disc \\
-                --control-images-dir ctrl/img --control-labels-dir ctrl/lbl \\
-                --control-sc-seg-dir ctrl/sc --control-canal-seg-dir ctrl/canal \\
-                --control-vertebrae-seg-dir ctrl/vert --control-discs-seg-dir ctrl/disc \\
-                -o reports
         '''),
         formatter_class=argparse.RawTextHelpFormatter
     )

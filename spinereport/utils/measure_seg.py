@@ -185,22 +185,6 @@ def main():
         help='The folder where output metrics will be saved (required).'
     )
     parser.add_argument(
-        '--prefix', '-p', type=str, default='',
-        help='File prefix to work on.'
-    )
-    parser.add_argument(
-        '--image-suffix', type=str, default='_0000',
-        help='Image suffix, defaults to "_0000".'
-    )
-    parser.add_argument(
-        '--seg-suffix', type=str, default='',
-        help='Segmentation suffix, defaults to "". Applied to every seg folder (combined and per-structure).'
-    )
-    parser.add_argument(
-        '--label-suffix', type=str, default='',
-        help='Label suffix, defaults to "".'
-    )
-    parser.add_argument(
         '--max-workers', '-w', type=int, default=mp.cpu_count(),
         help='Max worker to run in parallel proccess, defaults to multiprocessing.cpu_count().'
     )
@@ -221,10 +205,6 @@ def main():
     discs_segs_path = args.discs_seg_dir
     labels_path = args.labels_dir
     ofolder = args.ofolder
-    prefix = args.prefix
-    image_suffix = args.image_suffix
-    seg_suffix = args.seg_suffix
-    label_suffix = args.label_suffix
     max_workers = args.max_workers
     quiet = args.quiet
 
@@ -244,10 +224,6 @@ def main():
             discs_segs_path = "{discs_segs_path}"
             labels_path = "{labels_path}"
             ofolder = "{ofolder}"
-            prefix = "{prefix}"
-            image_suffix = "{image_suffix}"
-            seg_suffix = "{seg_suffix}"
-            label_suffix = "{label_suffix}"
             mapping_path = "{mapping_path}"
             max_workers = {max_workers}
             quiet = {quiet}
@@ -262,10 +238,6 @@ def main():
         discs_segs_path=discs_segs_path,
         labels_path=labels_path,
         ofolder_path=ofolder,
-        prefix=prefix,
-        image_suffix=image_suffix,
-        seg_suffix=seg_suffix,
-        label_suffix=label_suffix,
         mapping_path=mapping_path,
         max_workers=max_workers,
         quiet=quiet,
@@ -289,12 +261,12 @@ def _load_structure_map(folder, folder_desc):
         return {str(k): int(v) for k, v in json.load(f).items()}
 
 
-def _resolve_subject_seg_path(folder, image_path, image_suffix, seg_suffix):
+def _resolve_subject_seg_path(folder, image_path):
     '''Return the expected per-subject seg path for a flat override folder, or None if missing.'''
     if folder is None:
         return None
-    base = image_path.name.replace(f'{image_suffix}.nii.gz', '')
-    candidate = Path(folder) / f'{base}{seg_suffix}.nii.gz'
+    base = image_path.name.replace('.nii.gz', '')
+    candidate = Path(folder) / f'{base}.nii.gz'
     if not candidate.exists():
         return None
     return candidate
@@ -391,10 +363,6 @@ def measure_seg_mp(
         canal_segs_path=None,
         vertebrae_segs_path=None,
         discs_segs_path=None,
-        prefix='',
-        image_suffix='_0000',
-        seg_suffix='',
-        label_suffix='',
         mapping_path='',
         max_workers=mp.cpu_count(),
         quiet=False,
@@ -424,23 +392,22 @@ def measure_seg_mp(
     vertebrae_map = _load_structure_map(vertebrae_segs_path, 'vertebrae') if vertebrae_segs_path is not None else None
     discs_map = _load_structure_map(discs_segs_path, 'discs') if discs_segs_path is not None else None
 
-    glob_pattern = f'{prefix}*{image_suffix}.nii.gz'
-
     # Process the NIfTI image and segmentation files
-    image_path_list = list(images_path.glob(glob_pattern))
-    labels_path_list = [labels_path / image_path.name.replace(f'{image_suffix}.nii.gz', f'{label_suffix}.nii.gz') for image_path in image_path_list]
+    image_path_list = list(images_path.glob('*.nii.gz'))
+    labels_path_list = [labels_path / image_path.name.replace('_0000.nii.gz', '.nii.gz') for image_path in image_path_list]
 
     # Build per-subject seg_paths dicts for the assembler.
     seg_paths_list = []
-    for image_path in image_path_list:
+    for path in image_path_list:
+        image_path = path.replace('_0000.nii.gz', '.nii.gz')
         seg_paths = {
-            'basename': image_path.name.replace(f'{image_suffix}.nii.gz', ''),
-            'combined': _resolve_subject_seg_path(segs_path, image_path, image_suffix, seg_suffix),
-            'sc': _resolve_subject_seg_path(sc_segs_path, image_path, image_suffix, seg_suffix),
-            'canal': _resolve_subject_seg_path(canal_segs_path, image_path, image_suffix, seg_suffix),
-            'vertebrae': _resolve_subject_seg_path(vertebrae_segs_path, image_path, image_suffix, seg_suffix),
+            'basename': image_path.name.replace('.nii.gz', ''),
+            'combined': _resolve_subject_seg_path(segs_path, image_path),
+            'sc': _resolve_subject_seg_path(sc_segs_path, image_path),
+            'canal': _resolve_subject_seg_path(canal_segs_path, image_path),
+            'vertebrae': _resolve_subject_seg_path(vertebrae_segs_path, image_path),
             'vertebrae_map': vertebrae_map,
-            'discs': _resolve_subject_seg_path(discs_segs_path, image_path, image_suffix, seg_suffix),
+            'discs': _resolve_subject_seg_path(discs_segs_path, image_path),
             'discs_map': discs_map,
         }
         seg_paths_list.append(seg_paths)

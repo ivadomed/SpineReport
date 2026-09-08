@@ -128,7 +128,7 @@ def main():
     # Description and arguments
     parser = argparse.ArgumentParser(
         description=' '.join(f'''
-            This script processes NIfTI (Neuroimaging Informatics Technology Initiative) image and segmentation files.
+            This script processes NIfTI image and segmentation files.
             It extracts metrics from the canal, the discs and vertebrae. Segmentations can come from a
             totalspineseg output folder (via --segs-dir) or from separate per-structure folders (--sc-seg-dir,
             --canal-seg-dir, --vertebrae-seg-dir, --discs-seg-dir); the two can also be mixed, with per-structure

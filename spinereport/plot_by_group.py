@@ -92,9 +92,9 @@ def main():
         if not quiet: print(f'\nMeasuring segmentations for group in "{folder_path}"...')
         measure_seg_mp(
             images_path=folder_path / "input",
-            segs_path=folder_path / "step2_output",
             labels_path=folder_path / "step1_levels",
             ofolder_path=folder_metrics_path,
+            segs_path=folder_path / "step2_output",
             prefix=prefix,
             image_suffix=image_suffix,
             seg_suffix=seg_suffix,

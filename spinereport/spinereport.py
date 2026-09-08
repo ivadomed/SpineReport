@@ -13,43 +13,34 @@ from spinereport.utils.measure_seg import measure_seg_mp
 def _add_group_seg_args(parser, group):
     '''Add the per-group segmentation-source flags (--{group}-*-dir).'''
     parser.add_argument(
-        f'--{group}-dir', f'-{group[0]}', type=Path, default=None,
-        help=f'The output folder where totalspineseg outputs are located for the {group} group. '
-             f'When provided, images/labels/combined seg are read from its input/, step1_levels/ and '
-             f'step2_output/ subfolders unless overridden by the per-structure flags below.'
+        f'--{group}-tss', f'-{group[0]}', type=Path, default=None,
+        help=f'The output folder where totalspineseg outputs are located for the {group} group.'
     )
     parser.add_argument(
         f'--{group}-images-dir', type=Path, default=None,
-        help=f'Flat folder of {group}-group NIfTI images resampled to 1 mm isotropic. '
-             f'Use this to skip totalspineseg entirely when you already have all your own segmentations '
-             f'in the same 1 mm isotropic space. Overrides <{group}-dir>/input.'
+        help=f'Flat folder of {group}-group NIfTI images resampled to 1 mm isotropic. If you don"t use --{group}-tss'
     )
     parser.add_argument(
         f'--{group}-labels-dir', type=Path, default=None,
-        help=f'Flat folder of {group}-group NIfTI landmark labels (posterior tip of the discs). '
-             f'Integer values must follow the totalspineseg levels_maps.json convention (C1=1, C1-C2=2, ..., L5-S=25). '
-             f'Overrides <{group}-dir>/step1_levels.'
+        help=f'Flat folder of {group}-group NIfTI landmark labels (posterior tip of the discs). Use only to replace totalspineseg labels.'
     )
     parser.add_argument(
         f'--{group}-sc-seg-dir', type=Path, default=None,
-        help=f'Flat folder of {group}-group BINARY spinal-cord segmentations. Overrides SC from --{group}-dir.'
+        help=f'Flat folder of {group}-group BINARY spinal-cord segmentations. Use only to replace totalspineseg SC seg.'
     )
     parser.add_argument(
         f'--{group}-canal-seg-dir', type=Path, default=None,
-        help=f'Flat folder of {group}-group BINARY spinal-canal segmentations (SC + CSF). '
-             f'The CSF region is derived as canal minus SC. Overrides CSF from --{group}-dir.'
+        help=f'Flat folder of {group}-group BINARY spinal-canal segmentations (SC + CSF). Use only to replace totalspineseg canal seg.'
     )
     parser.add_argument(
         f'--{group}-vertebrae-seg-dir', type=Path, default=None,
         help=f'Flat folder of {group}-group multi-label vertebrae segmentations. Must contain a map.json '
-             f'mapping each anatomical name (e.g. "C1", "T12", "L5", "sacrum") to its integer label in '
-             f'the segmentation; values are remapped to tss_map.json. Overrides vertebrae from --{group}-dir.'
+             f'mapping each anatomical name (e.g. "C1", "T12", "L5", "sacrum") to its integer label. Use only to replace totalspineseg vertebrae seg.'
     )
     parser.add_argument(
         f'--{group}-discs-seg-dir', type=Path, default=None,
         help=f'Flat folder of {group}-group multi-label intervertebral-disc segmentations. Must contain a '
-             f'map.json mapping each disc name (e.g. "C2-C3", "L5-S") to its integer label in the '
-             f'segmentation; values are remapped to tss_map.json. Overrides discs from --{group}-dir.'
+             f'map.json mapping each disc name (e.g. "C2-C3", "L5-S") to its integer label. Use only to replace totalspineseg discs seg.'
     )
 
 

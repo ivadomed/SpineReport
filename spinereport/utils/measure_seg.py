@@ -265,7 +265,7 @@ def _resolve_subject_seg_path(folder, image_path):
     '''Return the expected per-subject seg path for a flat override folder, or None if missing.'''
     if folder is None:
         return None
-    base = image_path.name.replace('.nii.gz', '')
+    base = image_path.name.replace('_0000.nii.gz', '').replace('.nii.gz', '')
     candidate = Path(folder) / f'{base}.nii.gz'
     if not candidate.exists():
         return None
@@ -406,10 +406,9 @@ def measure_seg_mp(
 
     # Build per-subject seg_paths dicts for the assembler.
     seg_paths_list = []
-    for path in image_path_list:
-        image_path = path.replace('_0000.nii.gz', '.nii.gz')
+    for image_path in image_path_list:
         seg_paths = {
-            'basename': image_path.name.replace('.nii.gz', ''),
+            'basename': image_path.name.replace('_0000.nii.gz', '').replace('.nii.gz', ''),
             'combined': _resolve_subject_seg_path(segs_path, image_path),
             'sc': _resolve_subject_seg_path(sc_segs_path, image_path),
             'canal': _resolve_subject_seg_path(canal_segs_path, image_path),

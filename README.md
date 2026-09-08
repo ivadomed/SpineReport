@@ -90,6 +90,8 @@ The **test subjects** corresponds to the subjects for which a report will be gen
 
 SpineReport can also work with segmentations you produced yourself or with other automatic tools (spinal cord, canal, vertebrae, discs), and fall back on TotalSpineSeg for anything you don't provide. Any per-structure folder passed through the flags below overrides its counterpart in `--test-dir` / `--control-dir`; you can mix and match freely. Be careful, the segmentations must be in the same 1mm isotropic space as the input images in TOTALSPINESEG_FOLDER/input. To ensure that all segmentations are in the correct space, you should run TotalSpineSeg with the `--iso` flag on your raw images, then compute your segmentations onto the `TOTALSPINESEG_FOLDER/input` folder and save them in a separate segmentation folder.
 
+You can also skip TotalSpineSeg entirely by providing every field yourself (`--*-images-dir`, `--*-labels-dir`, `--*-sc-seg-dir`, `--*-canal-seg-dir`, `--*-vertebrae-seg-dir`, `--*-discs-seg-dir`), as long as all images and segmentations are resampled to the same 1mm isotropic space.
+
 ### Folder layout
 
 All segmentation folders must be **flat** (no per-subject subdirectories) and every file must share the same BIDS-style basename as the raw image (e.g. `<canal-seg-folder>/sub-001_T2w.nii.gz`).
@@ -126,6 +128,18 @@ Mixing sources — reuse TotalSpineSeg for everything except your own vertebrae 
 spinereport \
     -t TEST_TOTALSPINESEG_FOLDER --test-vertebrae-seg-dir my_test/vertebrae \
     -c CONTROL_TOTALSPINESEG_FOLDER \
+    -o reports
+```
+
+Fully custom — no TotalSpineSeg anywhere, all inputs already in 1mm isotropic space:
+```
+spinereport \
+    --test-images-dir test/img --test-labels-dir test/lbl \
+    --test-sc-seg-dir test/sc --test-canal-seg-dir test/canal \
+    --test-vertebrae-seg-dir test/vert --test-discs-seg-dir test/disc \
+    --control-images-dir ctrl/img --control-labels-dir ctrl/lbl \
+    --control-sc-seg-dir ctrl/sc --control-canal-seg-dir ctrl/canal \
+    --control-vertebrae-seg-dir ctrl/vert --control-discs-seg-dir ctrl/disc \
     -o reports
 ```
 

@@ -19,6 +19,12 @@ def _add_group_seg_args(parser, group):
              f'step2_output/ subfolders unless overridden by the per-structure flags below.'
     )
     parser.add_argument(
+        f'--{group}-images-dir', type=Path, default=None,
+        help=f'Flat folder of {group}-group NIfTI images resampled to 1 mm isotropic. '
+             f'Use this to skip totalspineseg entirely when you already have all your own segmentations '
+             f'in the same 1 mm isotropic space. Overrides <{group}-dir>/input.'
+    )
+    parser.add_argument(
         f'--{group}-labels-dir', type=Path, default=None,
         help=f'Flat folder of {group}-group NIfTI landmark labels (posterior tip of the discs). '
              f'Integer values must follow the totalspineseg levels_maps.json convention (C1=1, C1-C2=2, ..., L5-S=25). '
@@ -66,7 +72,7 @@ def _resolve_group_paths(group, args):
         return None
 
     paths = {
-        'images': _pick(None, 'input') if root is not None else None,
+        'images': _pick(getattr(args, f'{group}_images_dir'), 'input'),
         'labels': _pick(getattr(args, f'{group}_labels_dir'), 'step1_levels'),
         'combined': _pick(None, 'step2_output') if root is not None else None,
         'sc': getattr(args, f'{group}_sc_seg_dir'),
@@ -75,6 +81,11 @@ def _resolve_group_paths(group, args):
         'discs': getattr(args, f'{group}_discs_seg_dir'),
     }
 
+    if paths['images'] is None:
+        raise ValueError(
+            f'{group} group: no image folder specified. Provide --{group}-dir (totalspineseg output) '
+            f'or --{group}-images-dir (flat folder of 1 mm isotropic images).'
+        )
     if paths['labels'] is None:
         raise ValueError(
             f'{group} group: no label folder specified. Provide --{group}-dir (totalspineseg output) '
@@ -106,8 +117,10 @@ def main():
             Segmentations can come from a totalspineseg output folder (--test-dir / --control-dir) or from
             separate per-structure folders (--*-sc-seg-dir, --*-canal-seg-dir, --*-vertebrae-seg-dir,
             --*-discs-seg-dir); the two can also be mixed, with per-structure folders overriding what is
-            in the totalspineseg folder. All folders must be flat (no per-subject subdirectories) and
-            filenames must follow the BIDS naming convention.
+            in the totalspineseg folder. totalspineseg can be skipped entirely when every structure is
+            provided along with --*-images-dir and --*-labels-dir, as long as all inputs share the same
+            1 mm isotropic space. All folders must be flat (no per-subject subdirectories) and filenames
+            must follow the BIDS naming convention.
         '''.split()),
         epilog=textwrap.dedent('''
             Examples:
@@ -118,6 +131,16 @@ def main():
             spinereport \\
                 --test-sc-seg-dir test/sc --test-canal-seg-dir test/canal \\
                 --test-vertebrae-seg-dir test/vert --test-discs-seg-dir test/disc \\
+                --control-sc-seg-dir ctrl/sc --control-canal-seg-dir ctrl/canal \\
+                --control-vertebrae-seg-dir ctrl/vert --control-discs-seg-dir ctrl/disc \\
+                -o reports
+
+            # fully custom (no totalspineseg), all inputs in 1 mm isotropic space
+            spinereport \\
+                --test-images-dir test/img --test-labels-dir test/lbl \\
+                --test-sc-seg-dir test/sc --test-canal-seg-dir test/canal \\
+                --test-vertebrae-seg-dir test/vert --test-discs-seg-dir test/disc \\
+                --control-images-dir ctrl/img --control-labels-dir ctrl/lbl \\
                 --control-sc-seg-dir ctrl/sc --control-canal-seg-dir ctrl/canal \\
                 --control-vertebrae-seg-dir ctrl/vert --control-discs-seg-dir ctrl/disc \\
                 -o reports

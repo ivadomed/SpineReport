@@ -38,7 +38,7 @@ def _add_group_seg_args(parser, group):
     )
     parser.add_argument(
         f'--{group}-discs-seg-dir', type=Path, default=None,
-        help=f'Flat folder of {group}-group multi-label discs segmentations. Must contain a map.json (see README.md). Use only to replace totalspineseg discs seg.'
+        help=f'Flat folder of {group}-group multi-label discs segmentations. Must contain a map.json (see README.md). Use only to replace totalspineseg discs seg.\n'
     )
 
 

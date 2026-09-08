@@ -123,24 +123,29 @@ SpineReport uses these `map.json` files to remap your segmentation values to the
 
 ### Example
 
-Mixing sources — reuse TotalSpineSeg for everything except your own vertebrae segmentation for the test group:
-```
-spinereport \
-    -t TEST_TOTALSPINESEG_FOLDER --test-vertebrae-seg-dir my_test/vertebrae \
-    -c CONTROL_TOTALSPINESEG_FOLDER \
-    -o reports
+Use custom spinal cord segmentations from [SCT](https://spinalcordtoolbox.com/):
+
+1. First run TotalSpineSeg to obtain the rest of the segmentations using the flag `--iso` (canal, vertebrae, discs, landmarks):
+
+```bash
+totalspineseg raw out-iso --iso
 ```
 
-Fully custom — no TotalSpineSeg anywhere, all inputs already in 1mm isotropic space:
+2. Then run `sct_deepseg` to get spinal cord segmentations for all your images:
+> Because all images must be resampled to 1mm isotropic before using SpineReport, we can use the `out-iso/input` folder as input for `sct_deepseg`
+
+```bash
+mkdir -p sc-seg
+for file in out-iso/input/*; do 
+    base=$(basename "$file"); 
+    sct_deepseg spinalcord -i "$file" -o sc-seg/${base/_0000/};
+done
 ```
-spinereport \
-    --test-images-dir test/img --test-labels-dir test/lbl \
-    --test-sc-seg-dir test/sc --test-canal-seg-dir test/canal \
-    --test-vertebrae-seg-dir test/vert --test-discs-seg-dir test/disc \
-    --control-images-dir ctrl/img --control-labels-dir ctrl/lbl \
-    --control-sc-seg-dir ctrl/sc --control-canal-seg-dir ctrl/canal \
-    --control-vertebrae-seg-dir ctrl/vert --control-discs-seg-dir ctrl/disc \
-    -o reports
+
+3. Finally run SpineReport by specifying your new spinal cord segmentations
+
+```bash
+spinereport -t out-iso -c out-iso --test-sc-seg-dir sc-seg --control-sc-seg-dir sc-seg -o reports
 ```
 
 ## How to generate group analysis ?

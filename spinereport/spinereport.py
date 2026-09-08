@@ -38,7 +38,7 @@ def _add_group_seg_args(parser, group):
     )
     parser.add_argument(
         f'--{group}-discs-seg-dir', type=Path, default=None,
-        help=f'Flat folder of {group}-group multi-label discs segmentations. Must contain a map.json (see README.md). Use only to replace totalspineseg discs seg.\n'
+        help=f'Flat folder of {group}-group multi-label discs segmentations. Must contain a map.json (see README.md). Use only to replace totalspineseg discs seg.'
     )
 
 
@@ -124,8 +124,8 @@ def main():
         '''),
         formatter_class=argparse.RawTextHelpFormatter
     )
-    _add_group_seg_args(parser, 'test')
-    _add_group_seg_args(parser, 'control')
+    _add_group_seg_args(parser.add_argument_group('test group'), 'test')
+    _add_group_seg_args(parser.add_argument_group('control group'), 'control')
     parser.add_argument(
         '--ofolder', '-o', type=Path, required=True,
         help='The folder where reports will be saved (required).'

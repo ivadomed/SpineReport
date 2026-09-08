@@ -34,13 +34,11 @@ def _add_group_seg_args(parser, group):
     )
     parser.add_argument(
         f'--{group}-vertebrae-seg-dir', type=Path, default=None,
-        help=f'Flat folder of {group}-group multi-label vertebrae segmentations. Must contain a map.json '
-             f'mapping each anatomical name (e.g. "C1", "T12", "L5", "sacrum") to its integer label. Use only to replace totalspineseg vertebrae seg.'
+        help=f'Flat folder of {group}-group multi-label vertebrae segmentations. Must contain a map.json (see README.md). Use only to replace totalspineseg vertebrae seg.'
     )
     parser.add_argument(
         f'--{group}-discs-seg-dir', type=Path, default=None,
-        help=f'Flat folder of {group}-group multi-label intervertebral-disc segmentations. Must contain a '
-             f'map.json mapping each disc name (e.g. "C2-C3", "L5-S") to its integer label. Use only to replace totalspineseg discs seg.'
+        help=f'Flat folder of {group}-group multi-label discs segmentations. Must contain a map.json (see README.md). Use only to replace totalspineseg discs seg.'
     )
 
 

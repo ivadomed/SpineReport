@@ -129,25 +129,56 @@ def main():
     parser = argparse.ArgumentParser(
         description=' '.join(f'''
             This script processes NIfTI (Neuroimaging Informatics Technology Initiative) image and segmentation files.
-            It uses MRI scans and totalspineseg segmentations to extract metrics from the canal, the discs and vertebrae.
+            It extracts metrics from the canal, the discs and vertebrae. Segmentations can come from a
+            totalspineseg output folder (via --segs-dir) or from separate per-structure folders (--sc-seg-dir,
+            --canal-seg-dir, --vertebrae-seg-dir, --discs-seg-dir); the two can also be mixed, with per-structure
+            folders overriding what is in --segs-dir.
         '''.split()),
         epilog=textwrap.dedent('''
             Examples:
-            totalspineseg_measure_seg -i images -s segmentations -o metrics
+            spinereport_measure_seg -i images -s segmentations -l labels -o metrics
+            spinereport_measure_seg -i images -l labels -o metrics \\
+                --sc-seg-dir sc --canal-seg-dir canal \\
+                --vertebrae-seg-dir vertebrae --discs-seg-dir discs
         '''),
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument(
         '--images-dir', '-i', type=Path, required=True,
-        help='The folder where input NIfTI images files are located (required).'
+        help='The flat folder where input NIfTI image files are located (required).'
     )
     parser.add_argument(
-        '--segs-dir', '-s', type=Path, required=True,
-        help='The folder where input NIfTI segmentation files are located (required).'
+        '--segs-dir', '-s', type=Path, default=None,
+        help='The flat folder where combined multi-label NIfTI segmentation files are located '
+             '(e.g. totalspineseg step2_output). Optional if per-structure --*-seg-dir folders '
+             'cover every structure the reports need.'
+    )
+    parser.add_argument(
+        '--sc-seg-dir', type=Path, default=None,
+        help='Flat folder of BINARY spinal-cord segmentations. Overrides SC from --segs-dir.'
+    )
+    parser.add_argument(
+        '--canal-seg-dir', type=Path, default=None,
+        help='Flat folder of BINARY spinal-canal segmentations (SC + CSF). Overrides CSF from --segs-dir; '
+             'the CSF region is derived as canal minus SC.'
+    )
+    parser.add_argument(
+        '--vertebrae-seg-dir', type=Path, default=None,
+        help='Flat folder of multi-label vertebrae segmentations. Must contain a map.json mapping each '
+             'anatomical name (e.g. "C1", "T12", "L5", "sacrum") to its integer label in the segmentation. '
+             'Values are remapped to tss_map.json before extraction.'
+    )
+    parser.add_argument(
+        '--discs-seg-dir', type=Path, default=None,
+        help='Flat folder of multi-label intervertebral-disc segmentations. Must contain a map.json mapping '
+             'each disc name (e.g. "C2-C3", "L5-S") to its integer label in the segmentation. Values are '
+             'remapped to tss_map.json before extraction.'
     )
     parser.add_argument(
         '--labels-dir', '-l', type=Path, required=True,
-        help='The folder where input NIfTI labels (at the posterior tip of the discs) files are located (required).'
+        help='The flat folder where input NIfTI landmark labels (at the posterior tip of the discs) are '
+             'located (required). Label integer values must follow the totalspineseg levels_maps.json '
+             'convention (C1=1, C1-C2=2, ..., L5-S=25).'
     )
     parser.add_argument(
         '--ofolder', '-o', type=Path, required=True,
@@ -163,7 +194,7 @@ def main():
     )
     parser.add_argument(
         '--seg-suffix', type=str, default='',
-        help='Segmentation suffix, defaults to "".'
+        help='Segmentation suffix, defaults to "". Applied to every seg folder (combined and per-structure).'
     )
     parser.add_argument(
         '--label-suffix', type=str, default='',
@@ -184,6 +215,10 @@ def main():
     # Get the command-line argument values
     images_path = args.images_dir
     segs_path = args.segs_dir
+    sc_segs_path = args.sc_seg_dir
+    canal_segs_path = args.canal_seg_dir
+    vertebrae_segs_path = args.vertebrae_seg_dir
+    discs_segs_path = args.discs_seg_dir
     labels_path = args.labels_dir
     ofolder = args.ofolder
     prefix = args.prefix
@@ -203,6 +238,10 @@ def main():
             Running {Path(__file__).stem} with the following params:
             images_path = "{images_path}"
             segs_path = "{segs_path}"
+            sc_segs_path = "{sc_segs_path}"
+            canal_segs_path = "{canal_segs_path}"
+            vertebrae_segs_path = "{vertebrae_segs_path}"
+            discs_segs_path = "{discs_segs_path}"
             labels_path = "{labels_path}"
             ofolder = "{ofolder}"
             prefix = "{prefix}"
@@ -217,6 +256,10 @@ def main():
     measure_seg_mp(
         images_path=images_path,
         segs_path=segs_path,
+        sc_segs_path=sc_segs_path,
+        canal_segs_path=canal_segs_path,
+        vertebrae_segs_path=vertebrae_segs_path,
+        discs_segs_path=discs_segs_path,
         labels_path=labels_path,
         ofolder_path=ofolder,
         prefix=prefix,
@@ -228,11 +271,126 @@ def main():
         quiet=quiet,
     )
 
+def _load_structure_map(folder, folder_desc):
+    '''
+    Load the user-provided map.json inside a vertebrae/discs seg folder.
+
+    The file must exist and be a JSON object mapping anatomical names
+    (matching tss_map.json keys, e.g. "C1", "T12", "sacrum", "L5-S") to
+    the integer label used in the user's segmentation volumes.
+    '''
+    map_path = Path(folder) / 'map.json'
+    if not map_path.exists():
+        raise FileNotFoundError(
+            f'{folder_desc} folder "{folder}" must contain a map.json '
+            f'mapping anatomical names to the integer labels used in the segmentation.'
+        )
+    with open(map_path, 'r') as f:
+        return {str(k): int(v) for k, v in json.load(f).items()}
+
+
+def _resolve_subject_seg_path(folder, image_path, image_suffix, seg_suffix):
+    '''Return the expected per-subject seg path for a flat override folder, or None if missing.'''
+    if folder is None:
+        return None
+    base = image_path.name.replace(f'{image_suffix}.nii.gz', '')
+    candidate = Path(folder) / f'{base}{seg_suffix}.nii.gz'
+    if not candidate.exists():
+        return None
+    return candidate
+
+
+def _assemble_combined_seg(seg_paths, mapping):
+    '''
+    Build a combined multi-label seg volume using tss_map.json values from whichever
+    per-structure segs are provided.
+
+    seg_paths keys (all optional except that at least one seg source must be set):
+        - combined:      Path to a multi-label seg (e.g. totalspineseg step2_output).
+        - sc:            Path to a BINARY spinal cord seg.
+        - canal:         Path to a BINARY canal (SC+CSF) seg.
+        - vertebrae:     Path to a multi-label vertebrae seg.
+        - vertebrae_map: dict mapping tss anatomical name -> user's integer label.
+        - discs:         Path to a multi-label discs seg.
+        - discs_map:     dict mapping tss anatomical name -> user's integer label.
+    '''
+    # Load the reference (combined if provided, else the first available override).
+    combined_img = None
+    if seg_paths.get('combined') is not None:
+        combined_img = Image(str(seg_paths['combined'])).change_orientation('RPI')
+    if combined_img is None:
+        for key in ('sc', 'canal', 'vertebrae', 'discs'):
+            p = seg_paths.get(key)
+            if p is not None:
+                combined_img = zeros_like(Image(str(p)).change_orientation('RPI'))
+                break
+    if combined_img is None:
+        raise ValueError('No segmentation source provided; supply --segs-dir or per-structure --*-seg-dir.')
+
+    # Compute intended SC mask, from override if present, else from the combined seg.
+    sc_mask = None
+    if seg_paths.get('sc') is not None:
+        sc_img = Image(str(seg_paths['sc'])).change_orientation('RPI')
+        sc_mask = sc_img.data > 0
+    elif seg_paths.get('combined') is not None:
+        sc_mask = combined_img.data == mapping['SC']
+
+    # Compute intended CSF mask (canal minus SC), from override if present, else from the combined seg.
+    csf_mask = None
+    if seg_paths.get('canal') is not None:
+        canal_img = Image(str(seg_paths['canal'])).change_orientation('RPI')
+        canal_mask = canal_img.data > 0
+        if sc_mask is not None:
+            csf_mask = canal_mask & (~sc_mask)
+        else:
+            csf_mask = canal_mask
+    elif seg_paths.get('combined') is not None:
+        csf_mask = combined_img.data == mapping['CSF']
+
+    # Rewrite SC and CSF in the combined volume.
+    combined_img.data[combined_img.data == mapping['SC']] = 0
+    combined_img.data[combined_img.data == mapping['CSF']] = 0
+    if csf_mask is not None:
+        combined_img.data[csf_mask] = mapping['CSF']
+    if sc_mask is not None:
+        combined_img.data[sc_mask] = mapping['SC']  # SC wins over CSF on overlap.
+
+    # Vertebrae override: clear the vertebrae label range then paint remapped labels.
+    if seg_paths.get('vertebrae') is not None:
+        vert_img = Image(str(seg_paths['vertebrae'])).change_orientation('RPI')
+        vert_map = seg_paths.get('vertebrae_map') or {}
+        vert_range = (combined_img.data > 10) & (combined_img.data < 51)
+        combined_img.data[vert_range] = 0
+        for name, user_label in vert_map.items():
+            tss_val = mapping.get(name)
+            if tss_val is None or not (10 < tss_val < 51):
+                continue
+            combined_img.data[vert_img.data == user_label] = tss_val
+
+    # Discs override: clear the disc label range then paint remapped labels.
+    if seg_paths.get('discs') is not None:
+        disc_img = Image(str(seg_paths['discs'])).change_orientation('RPI')
+        disc_map = seg_paths.get('discs_map') or {}
+        disc_range = (combined_img.data >= 63) & (combined_img.data <= 100)
+        combined_img.data[disc_range] = 0
+        for name, user_label in disc_map.items():
+            tss_val = mapping.get(name)
+            if tss_val is None or not (63 <= tss_val <= 100):
+                continue
+            combined_img.data[disc_img.data == user_label] = tss_val
+
+    return combined_img
+
+
 def measure_seg_mp(
         images_path,
-        segs_path,
         labels_path,
         ofolder_path,
+        segs_path=None,
+        sc_segs_path=None,
+        canal_segs_path=None,
+        vertebrae_segs_path=None,
+        discs_segs_path=None,
         prefix='',
         image_suffix='_0000',
         seg_suffix='',
@@ -243,18 +401,49 @@ def measure_seg_mp(
     ):
     '''
     Wrapper function to handle multiprocessing.
+
+    Folders are expected to be flat (no per-subject subdirectories). For each image,
+    the matching seg / label file is looked up by basename in each provided folder.
     '''
     images_path = Path(images_path)
-    segs_path = Path(segs_path)
     labels_path = Path(labels_path)
     ofolder_path = Path(ofolder_path)
+    segs_path = Path(segs_path) if segs_path is not None else None
+    sc_segs_path = Path(sc_segs_path) if sc_segs_path is not None else None
+    canal_segs_path = Path(canal_segs_path) if canal_segs_path is not None else None
+    vertebrae_segs_path = Path(vertebrae_segs_path) if vertebrae_segs_path is not None else None
+    discs_segs_path = Path(discs_segs_path) if discs_segs_path is not None else None
+
+    if all(p is None for p in (segs_path, sc_segs_path, canal_segs_path, vertebrae_segs_path, discs_segs_path)):
+        raise ValueError(
+            'At least one segmentation source is required: --segs-dir (combined) or one of '
+            '--sc-seg-dir / --canal-seg-dir / --vertebrae-seg-dir / --discs-seg-dir.'
+        )
+
+    # Load per-structure maps once (fail fast if a folder is provided without map.json).
+    vertebrae_map = _load_structure_map(vertebrae_segs_path, 'vertebrae') if vertebrae_segs_path is not None else None
+    discs_map = _load_structure_map(discs_segs_path, 'discs') if discs_segs_path is not None else None
 
     glob_pattern = f'{prefix}*{image_suffix}.nii.gz'
 
     # Process the NIfTI image and segmentation files
     image_path_list = list(images_path.glob(glob_pattern))
-    seg_path_list = [segs_path / image_path.relative_to(images_path).parent / image_path.name.replace(f'{image_suffix}.nii.gz', f'{seg_suffix}.nii.gz') for image_path in image_path_list]
-    labels_path_list = [labels_path / image_path.relative_to(images_path).parent / image_path.name.replace(f'{image_suffix}.nii.gz', f'{label_suffix}.nii.gz') for image_path in image_path_list]
+    labels_path_list = [labels_path / image_path.name.replace(f'{image_suffix}.nii.gz', f'{label_suffix}.nii.gz') for image_path in image_path_list]
+
+    # Build per-subject seg_paths dicts for the assembler.
+    seg_paths_list = []
+    for image_path in image_path_list:
+        seg_paths = {
+            'basename': image_path.name.replace(f'{image_suffix}.nii.gz', ''),
+            'combined': _resolve_subject_seg_path(segs_path, image_path, image_suffix, seg_suffix),
+            'sc': _resolve_subject_seg_path(sc_segs_path, image_path, image_suffix, seg_suffix),
+            'canal': _resolve_subject_seg_path(canal_segs_path, image_path, image_suffix, seg_suffix),
+            'vertebrae': _resolve_subject_seg_path(vertebrae_segs_path, image_path, image_suffix, seg_suffix),
+            'vertebrae_map': vertebrae_map,
+            'discs': _resolve_subject_seg_path(discs_segs_path, image_path, image_suffix, seg_suffix),
+            'discs_map': discs_map,
+        }
+        seg_paths_list.append(seg_paths)
 
     # Load mapping
     with open(mapping_path, 'r') as file:
@@ -267,7 +456,7 @@ def measure_seg_mp(
             mapping=mapping,
         ),
         image_path_list,
-        seg_path_list,
+        seg_paths_list,
         labels_path_list,
         max_workers=max_workers,
         chunksize=1,
@@ -276,7 +465,7 @@ def measure_seg_mp(
 
 def _measure_seg(
         img_path,
-        seg_path,
+        seg_paths,
         label_path,
         ofolder_path,
         mapping
@@ -284,10 +473,12 @@ def _measure_seg(
     '''
     Wrapper function to handle IO.
     '''
-    # Load image and segmentation
+    # Load image and label
     img = Image(str(img_path)).change_orientation('RPI')
-    seg = Image(str(seg_path)).change_orientation('RPI')
     label = Image(str(label_path)).change_orientation('RPI')
+
+    # Assemble the combined multi-label seg from whichever sources are available.
+    seg = _assemble_combined_seg(seg_paths, mapping)
 
     metrics = {}
     imgs = {}
@@ -299,7 +490,7 @@ def _measure_seg(
     )
     
     # Create output folders if does not exists
-    img_name=Path(str(seg_path)).name.replace('.nii.gz', '')
+    img_name = seg_paths['basename']
     ofolder_path = Path(os.path.join(ofolder_path, img_name))
     csv_folder_path = ofolder_path / 'csv'
     imgs_folder_path = ofolder_path / 'imgs'
@@ -1767,6 +1958,16 @@ if __name__ == '__main__':
     mapping_path = os.path.join(resources_path, 'labels_maps/tss_map.json')
     with open(mapping_path, 'r') as file:
         mapping = json.load(file)
-    
-    # Run measure_seg
-    _measure_seg(img_path, seg_path, label_path, ofolder_path, mapping)
+
+    # Run measure_seg using the combined totalspineseg step2 output.
+    seg_paths = {
+        'basename': Path(seg_path).name.replace('.nii.gz', ''),
+        'combined': Path(seg_path),
+        'sc': None,
+        'canal': None,
+        'vertebrae': None,
+        'vertebrae_map': None,
+        'discs': None,
+        'discs_map': None,
+    }
+    _measure_seg(img_path, seg_paths, label_path, ofolder_path, mapping)

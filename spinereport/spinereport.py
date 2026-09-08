@@ -17,27 +17,27 @@ def _add_group_seg_args(parser, group):
         help=f'The output folder where totalspineseg outputs are located for the {group} group.'
     )
     parser.add_argument(
-        f'--{group}-images-dir', type=Path, default=None,
+        f'--{group}-images-dir', f'-i{group[0]}', type=Path, default=None,
         help=f'Flat folder of {group}-group NIfTI images resampled to 1 mm isotropic. If you don"t use --{group}-tss'
     )
     parser.add_argument(
-        f'--{group}-labels-dir', type=Path, default=None,
+        f'--{group}-labels-dir', f'-l{group[0]}', type=Path, default=None,
         help=f'Flat folder of {group}-group NIfTI landmark labels (posterior tip of the discs). Use only to replace totalspineseg labels.'
     )
     parser.add_argument(
-        f'--{group}-sc-seg-dir', type=Path, default=None,
+        f'--{group}-sc-seg-dir', f'-sc{group[0]}', type=Path, default=None,
         help=f'Flat folder of {group}-group BINARY spinal-cord segmentations. Use only to replace totalspineseg SC seg.'
     )
     parser.add_argument(
-        f'--{group}-canal-seg-dir', type=Path, default=None,
+        f'--{group}-canal-seg-dir', f'-c{group[0]}', type=Path, default=None,
         help=f'Flat folder of {group}-group BINARY spinal-canal segmentations (SC + CSF). Use only to replace totalspineseg canal seg.'
     )
     parser.add_argument(
-        f'--{group}-vertebrae-seg-dir', type=Path, default=None,
+        f'--{group}-vertebrae-seg-dir', f'-v{group[0]}', type=Path, default=None,
         help=f'Flat folder of {group}-group multi-label vertebrae segmentations. Must contain a map.json (see README.md). Use only to replace totalspineseg vertebrae seg.'
     )
     parser.add_argument(
-        f'--{group}-discs-seg-dir', type=Path, default=None,
+        f'--{group}-discs-seg-dir', f'-d{group[0]}', type=Path, default=None,
         help=f'Flat folder of {group}-group multi-label discs segmentations. Must contain a map.json (see README.md). Use only to replace totalspineseg discs seg.'
     )
 

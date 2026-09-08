@@ -145,40 +145,33 @@ def main():
     )
     parser.add_argument(
         '--images-dir', '-i', type=Path, required=True,
-        help='The flat folder where input NIfTI image files are located (required).'
+        help='Flat folder of input NIfTI images resampled to 1 mm isotropic (required).'
     )
     parser.add_argument(
         '--segs-dir', '-s', type=Path, default=None,
-        help='The flat folder where combined multi-label NIfTI segmentation files are located '
-             '(e.g. totalspineseg step2_output). Optional if per-structure --*-seg-dir folders '
-             'cover every structure the reports need.'
+        help='Flat folder of combined multi-label NIfTI segmentations (e.g. totalspineseg step2_output).'
     )
     parser.add_argument(
         '--sc-seg-dir', type=Path, default=None,
-        help='Flat folder of BINARY spinal-cord segmentations. Overrides SC from --segs-dir.'
+        help='Flat folder of BINARY spinal-cord segmentations. Use only to replace totalspineseg SC seg.'
     )
     parser.add_argument(
         '--canal-seg-dir', type=Path, default=None,
-        help='Flat folder of BINARY spinal-canal segmentations (SC + CSF). Overrides CSF from --segs-dir; '
-             'the CSF region is derived as canal minus SC.'
+        help='Flat folder of BINARY spinal-canal segmentations (SC + CSF). Use only to replace totalspineseg canal seg.'
     )
     parser.add_argument(
         '--vertebrae-seg-dir', type=Path, default=None,
-        help='Flat folder of multi-label vertebrae segmentations. Must contain a map.json mapping each '
-             'anatomical name (e.g. "C1", "T12", "L5", "sacrum") to its integer label in the segmentation. '
-             'Values are remapped to tss_map.json before extraction.'
+        help='Flat folder of multi-label vertebrae segmentations. Must contain a map.json '
+             'mapping each anatomical name (e.g. "C1", "T12", "L5", "sacrum") to its integer label. Use only to replace totalspineseg vertebrae seg.'
     )
     parser.add_argument(
         '--discs-seg-dir', type=Path, default=None,
-        help='Flat folder of multi-label intervertebral-disc segmentations. Must contain a map.json mapping '
-             'each disc name (e.g. "C2-C3", "L5-S") to its integer label in the segmentation. Values are '
-             'remapped to tss_map.json before extraction.'
+        help='Flat folder of multi-label intervertebral-disc segmentations. Must contain a '
+             'map.json mapping each disc name (e.g. "C2-C3", "L5-S") to its integer label. Use only to replace totalspineseg discs seg.'
     )
     parser.add_argument(
         '--labels-dir', '-l', type=Path, required=True,
-        help='The flat folder where input NIfTI landmark labels (at the posterior tip of the discs) are '
-             'located (required). Label integer values must follow the totalspineseg levels_maps.json '
-             'convention (C1=1, C1-C2=2, ..., L5-S=25).'
+        help='Flat folder of NIfTI landmark labels at the posterior tip of the discs (required).'
     )
     parser.add_argument(
         '--ofolder', '-o', type=Path, required=True,

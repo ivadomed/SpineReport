@@ -1,6 +1,6 @@
 [project]
 name = "spinereport"
-version = "20251023"
+version = "20260908"
 requires-python = ">=3.10"
 description = "Automated extraction of spinal morphometrics and generation of structured radiological reports from MRI data."
 readme = "README.md"

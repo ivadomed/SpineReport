@@ -14,7 +14,7 @@ import cv2
 from sklearn.mixture import GaussianMixture
 import colorsys
 
-from spinereport.utils.image import Image, resample_nib, zeros_like
+from spinereport.utils.image import Image, zeros_like
 from spinereport.utils.utils import find_symmetry_vector_binary, straighten_coordinates, _properties2d, project_point_centerline, get_centerline, fastest_dilation_edt
 from skimage.morphology import ball, binary_dilation
 import totalspineseg.resources as resources
@@ -524,7 +524,8 @@ def _measure_seg(
     
 def measure_seg(img, seg, label, mapping):
     '''
-    Compute morphometric measurements of the spinal canal, the intervertebral discs and the neural foramen
+    Compute morphometric measurements of the spinal canal, the intervertebral discs, the vertebrae and the neural foramen. 
+    All input images are expected to be in RPI orientation and resampled to isotropic resolution (1 mm).
     '''
     # Fetch unique segmentation values
     unique_seg = np.unique(seg.data)
@@ -532,9 +533,7 @@ def measure_seg(img, seg, label, mapping):
     # Resample image to isotropic resolution
     nx, ny, nz, nt, px, py, pz, pt = seg.dim
     pr = min([px, py, pz])
-    seg = resample_nib(seg, new_size=[pr, pr, pr], new_size_type='mm', interpolation='nn', verbose=False)
-    img = resample_nib(img, new_size=[pr, pr, pr], new_size_type='mm', interpolation='linear', verbose=False)
-
+    
     # Apply N4 algorithm to correct for intensity non uniformity
     img.data = n4_bias_field_correction(img.data, seg.data > 0)
 
@@ -1914,9 +1913,9 @@ def smooth(y, box_pts):
     return y_smooth
 
 if __name__ == '__main__':
-    img_path = '/Users/nathan/Desktop/split_08_out_iso/input/08-localizer_fast_FA3_TR10_BW240_5slc_15meas_p2_1_meas013_0000.nii.gz'
-    seg_path = '/Users/nathan/Desktop/split_08_out_iso/step2_output/08-localizer_fast_FA3_TR10_BW240_5slc_15meas_p2_1_meas013.nii.gz'
-    label_path = '/Users/nathan/Desktop/split_08_out_iso/step1_levels/08-localizer_fast_FA3_TR10_BW240_5slc_15meas_p2_1_meas013.nii.gz'
+    img_path = '/Users/nathan/Desktop/out-iso/input/sub-002_ses-headNormal_T2w_0000.nii.gz'
+    seg_path = '/Users/nathan/Desktop/out-iso/step2_output/sub-002_ses-headNormal_T2w.nii.gz'
+    label_path = '/Users/nathan/Desktop/out-iso/step1_levels/sub-002_ses-headNormal_T2w.nii.gz'
 
     ofolder_path = 'test'
 

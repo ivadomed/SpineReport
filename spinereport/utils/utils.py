@@ -99,7 +99,7 @@ def find_symmetry_vector_binary(mask, center, angle_step_deg=1.0, refine_window_
     return best_angle, vector_2d, best_sum
 
 def straighten_coordinates(centerline, spine_centerline, radius):
-    # Identify longest canal portion with complete base available
+    # First pass: per-slice origin, superior, raw anterior (left deferred until anterior is regularized)
     base_list = []
     for i, (origin, normal) in enumerate(zip(centerline['position'].T, centerline['derivative'].T)):
         superior = normal / np.linalg.norm(normal)  # in the S direction
@@ -112,10 +112,43 @@ def straighten_coordinates(centerline, spine_centerline, radius):
 
         anterior = anterior_point - origin
         anterior = anterior / np.linalg.norm(anterior)  # in the A direction
-        left = np.cross(superior, anterior)  # in the L direction
 
-        base_list.append((origin, left, anterior, superior))
-    
+        base_list.append([origin, anterior, superior])
+
+    # Regularize the anterior vectors across contiguous valid slices to damp noise
+    # from the spine centerline intersection before computing the cross product.
+    anterior_raw = {i: np.array(b[1], copy=True) for i, b in enumerate(base_list) if b is not None}
+    valid_idx = sorted(anterior_raw.keys())
+    if valid_idx:
+        # Smooth each component with a moving average along the slice axis.
+        window = 11
+        kernel = np.ones(window) / window
+        pad = window // 2
+        raw = np.array([anterior_raw[i] for i in valid_idx])  # shape (n_valid, 3)
+        padded = np.pad(raw, ((pad, pad), (0, 0)), mode='edge')
+        smoothed = np.stack(
+            [np.convolve(padded[:, k], kernel, mode='valid') for k in range(3)],
+            axis=1,
+        )
+        # Re-project onto the plane perpendicular to the local superior and renormalize,
+        # so the smoothed anterior stays a valid unit vector of the local base.
+        for j, i in enumerate(valid_idx):
+            origin, _, superior = base_list[i]
+            a = smoothed[j]
+            a = a - np.dot(a, superior) * superior
+            n = np.linalg.norm(a)
+            if n < 1e-8:
+                continue
+            base_list[i][1] = a / n
+
+    # Second pass: compute left from the regularized anterior and freeze the tuple
+    for i, b in enumerate(base_list):
+        if b is None:
+            continue
+        origin, anterior, superior = b
+        left = np.cross(superior, anterior)  # in the L direction
+        base_list[i] = (origin, left, anterior, superior)
+
     # Find longest portion of the centerline with complete base available
     longest_start_idx = None
     longest_length = 0
@@ -137,7 +170,7 @@ def straighten_coordinates(centerline, spine_centerline, radius):
             longest_length = length
             longest_start_idx = current_start_idx
     if longest_start_idx is None:
-        raise ValueError("Cannot project spine centerline on orhtonal planes of the centerline.")
+        raise ValueError("Cannot project spine centerline on orthogonal planes of the centerline.")    
     
     coordinates = np.zeros((3, 2*radius+1, 2*radius+1, longest_length), dtype=float)
     centerline_start_idx = centerline['position'].T[longest_start_idx,2].astype(int)

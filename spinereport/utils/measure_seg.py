@@ -1913,9 +1913,9 @@ def smooth(y, box_pts):
     return y_smooth
 
 if __name__ == '__main__':
-    img_path = '/Users/nathan/Desktop/out-iso/input/sub-002_ses-headNormal_T2w_0000.nii.gz'
-    seg_path = '/Users/nathan/Desktop/out-iso/step2_output/sub-002_ses-headNormal_T2w.nii.gz'
-    label_path = '/Users/nathan/Desktop/out-iso/step1_levels/sub-002_ses-headNormal_T2w.nii.gz'
+    img_path = '/Users/nathan/Desktop/out-iso/input/sub-006_ses-headUp_T2w_0000.nii.gz'
+    seg_path = '/Users/nathan/Desktop/out-iso/step2_output/sub-006_ses-headUp_T2w.nii.gz'
+    label_path = '/Users/nathan/Desktop/out-iso/step1_levels/sub-006_ses-headUp_T2w.nii.gz'
 
     ofolder_path = 'test'
 

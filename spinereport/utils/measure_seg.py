@@ -1039,70 +1039,112 @@ def measure_canal(seg_canal, centerline, spine_centerline):
     Extract canal metrics using:
     - canal segmentation
     - spine segmentation
+
+    The canal and the spinal cord are straightened independently along their own
+    centerlines (both using the shared spine centerline to define the anterior direction),
+    measured separately on their respective straightened volumes, and the per-slice
+    metrics are aligned via the absolute z slice index.
     '''
-    # List properties
-    property_list = [
-        'area_canal',
-        'right_area_canal',
-        'left_area_canal',
-        'area_spinalcord',
-        'right_area_spinalcord',
-        'left_area_spinalcord',
-        'diameter_AP_canal',
-        'diameter_AP_spinalcord',
-        'diameter_RL_canal',
-        'diameter_RL_spinalcord',
-        'canal_centroid',
-        'eccentricity_canal',
-        'eccentricity_spinalcord',
-        'solidity_canal',
-        'solidity_spinalcord',
-        'asymmetry_canal_R_L',
-        'asymmetry_spinalcord_R_L'
+    # Structure-agnostic keys returned by _properties2d (minus 'centroid', handled separately)
+    base_keys = [
+        'area',
+        'right_area',
+        'left_area',
+        'diameter_AP',
+        'diameter_RL',
+        'eccentricity',
+        'solidity',
+        'asymmetry_R_L',
     ]
+    canal_keys = [_structure_key(k, 'canal') for k in base_keys]
+    sc_keys = [_structure_key(k, 'spinalcord') for k in base_keys]
+    property_list = canal_keys + sc_keys + ['canal_centroid']
+
     # Fetch dimensions from image.
     nx, ny, nz, nt, px, py, pz, pt = seg_canal.dim
 
-    # Straighten canal and spinalcord to extract metrics
-    radius = 50 # mm, radius of the straightened patch to extract around the centerline
-    canal_seg = (seg_canal.data > 0).astype(int)
-    sc_seg = (seg_canal.data == 1).astype(int)
-    straightened_coordinates, first_z_index = straighten_coordinates(centerline, spine_centerline, radius=radius)
-    straightened_canal = ndimage.map_coordinates(canal_seg, straightened_coordinates, order=1, mode='grid-constant')
-    straightened_spinalcord = ndimage.map_coordinates(sc_seg, straightened_coordinates, order=1, mode='grid-constant')    
+    radius = 50  # mm, radius of the straightened patch to extract around the centerline
+    canal_mask = (seg_canal.data > 0).astype(int)
+    sc_mask = (seg_canal.data == 1).astype(int)
 
-    # Pick longest segment with non empty slices
-    empty_slices = np.array([np.sum(straightened_canal[:, :, iz]) == 0 for iz in range(straightened_canal.shape[2])])
-    if np.all(empty_slices):
+    # Straighten the canal along the canal centerline
+    canal_coords, canal_first_z = straighten_coordinates(centerline, spine_centerline, radius=radius)
+    straightened_canal = ndimage.map_coordinates(canal_mask, canal_coords, order=1, mode='grid-constant')
+
+    # Straighten the spinal cord along its own centerline
+    seg_sc = zeros_like(seg_canal)
+    seg_sc.data = sc_mask
+    sc_centerline = get_centerline(seg_sc)
+    sc_coords, sc_first_z = straighten_coordinates(sc_centerline, spine_centerline, radius=radius)
+    straightened_sc = ndimage.map_coordinates(sc_mask, sc_coords, order=1, mode='grid-constant')
+
+    canal_min, canal_max = _longest_nonempty_z_segment(straightened_canal)
+    if canal_min is None:
         raise ValueError('No canal found in any slice after straightening.')
-    elif not np.any(empty_slices):
-        min_index = np.argwhere(straightened_canal>0)[:,2].min()
-        max_index = np.argwhere(straightened_canal>0)[:,2].max()
-    else:
-        empty_slices_indices = np.where(empty_slices)[0]+1
-        if not empty_slices_indices[0] == 0:
-            empty_slices_indices = np.insert(empty_slices_indices, 0, 0)
-        if not empty_slices_indices[-1] == straightened_canal.shape[-1] - 1:
-            empty_slices_indices = np.insert(empty_slices_indices, len(empty_slices_indices), straightened_canal.shape[-1] -1)
-        segments = [empty_slices_indices[i+1]-empty_slices_indices[i] for i in range(len(empty_slices_indices)-1)]
-        longest_segment_idx = np.argmax(segments)
-        min_index = empty_slices_indices[longest_segment_idx]
-        max_index = empty_slices_indices[longest_segment_idx+1]
-    
-    # Loop across the S-I slices
-    shape_properties = {key: {} for key in property_list}
-    for iz in range(min_index, max_index + 1):
-        # Calculate shape metrics
-        shape_property = _properties2d(straightened_canal[:, :, iz], straightened_spinalcord[:, :, iz], [px, py])
+    sc_min, sc_max = _longest_nonempty_z_segment(straightened_sc)
 
-        if shape_property is not None:
-            # Loop across properties and assign values for function output
-            for property_name in property_list:
-                shape_properties[property_name][first_z_index+iz] = shape_property[property_name]
+    # Pre-compute SC metrics keyed by absolute z slice so we can join by z below
+    sc_metrics_by_abs_z = {}
+    if sc_min is not None:
+        for iz in range(sc_min, sc_max + 1):
+            sc_props = _properties2d(straightened_sc[:, :, iz], [px, py])
+            if sc_props is None:
+                continue
+            sc_metrics_by_abs_z[sc_first_z + iz] = sc_props
+
+    # Walk canal slices and merge SC values when the absolute z matches
+    shape_properties = {key: {} for key in property_list}
+    for iz in range(canal_min, canal_max + 1):
+        canal_props = _properties2d(straightened_canal[:, :, iz], [px, py])
+        if canal_props is None:
+            print(f'Warning: error with slice {canal_first_z + iz}.')
+            continue
+        abs_z = canal_first_z + iz
+
+        for base_key, canal_key in zip(base_keys, canal_keys):
+            shape_properties[canal_key][abs_z] = canal_props[base_key]
+        shape_properties['canal_centroid'][abs_z] = canal_props['centroid']
+
+        sc_props = sc_metrics_by_abs_z.get(abs_z)
+        if sc_props is not None:
+            for base_key, sc_key in zip(base_keys, sc_keys):
+                shape_properties[sc_key][abs_z] = sc_props[base_key]
         else:
-            print(f'Warning: error with slice {first_z_index+iz}.')
+            for sc_key in sc_keys:
+                shape_properties[sc_key][abs_z] = -1
 
     return shape_properties
+
+
+def _structure_key(base_key, structure):
+    """Attach a structure tag to a base metric key, preserving the historical layout.
+
+    Most keys get a trailing suffix (`area` → `area_canal`), but the R/L asymmetry key
+    keeps the structure tag in the middle (`asymmetry_R_L` → `asymmetry_canal_R_L`).
+    """
+    if base_key == 'asymmetry_R_L':
+        return f'asymmetry_{structure}_R_L'
+    return f'{base_key}_{structure}'
+
+
+def _longest_nonempty_z_segment(volume):
+    """Return (min_index, max_index) of the longest contiguous run of non-empty slices
+    along the last axis. Returns (None, None) if every slice is empty.
+    """
+    empty_slices = np.array([np.sum(volume[:, :, iz]) == 0 for iz in range(volume.shape[2])])
+    if np.all(empty_slices):
+        return None, None
+    if not np.any(empty_slices):
+        nonzero_z = np.argwhere(volume > 0)[:, 2]
+        return int(nonzero_z.min()), int(nonzero_z.max())
+    empty_slices_indices = np.where(empty_slices)[0] + 1
+    if empty_slices_indices[0] != 0:
+        empty_slices_indices = np.insert(empty_slices_indices, 0, 0)
+    if empty_slices_indices[-1] != volume.shape[-1] - 1:
+        empty_slices_indices = np.insert(empty_slices_indices, len(empty_slices_indices), volume.shape[-1] - 1)
+    segments = [empty_slices_indices[i + 1] - empty_slices_indices[i] for i in range(len(empty_slices_indices) - 1)]
+    longest_idx = int(np.argmax(segments))
+    return int(empty_slices_indices[longest_idx]), int(empty_slices_indices[longest_idx + 1])
 
 def measure_vertebra(img_data, seg_vert_data, seg_canal_data, canal_centerline, pr):
     '''

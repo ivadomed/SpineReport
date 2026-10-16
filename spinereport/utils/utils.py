@@ -98,7 +98,7 @@ def find_symmetry_vector_binary(mask, center, angle_step_deg=1.0, refine_window_
     vector_2d = np.array([np.cos(best_angle), np.sin(best_angle)], dtype=np.float64)
     return best_angle, vector_2d, best_sum
 
-def straighten_coordinates(centerline, spine_centerline, radius, debug_volume=None, debug_tag=''):
+def straighten_coordinates(centerline, spine_centerline, radius):
     # First pass: per-slice origin, superior, raw anterior (left deferred until anterior is regularized)
     base_list = []
     for i, (origin, normal) in enumerate(zip(centerline['position'].T, centerline['derivative'].T)):
@@ -115,31 +115,31 @@ def straighten_coordinates(centerline, spine_centerline, radius, debug_volume=No
 
         base_list.append([origin, anterior, superior])
 
-    # # Regularize the anterior vectors across contiguous valid slices to damp noise
-    # # from the spine centerline intersection before computing the cross product.
-    # anterior_raw = {i: np.array(b[1], copy=True) for i, b in enumerate(base_list) if b is not None}
-    # valid_idx = sorted(anterior_raw.keys())
-    # if valid_idx:
-    #     # Smooth each component with a moving average along the slice axis.
-    #     window = 11
-    #     kernel = np.ones(window) / window
-    #     pad = window // 2
-    #     raw = np.array([anterior_raw[i] for i in valid_idx])  # shape (n_valid, 3)
-    #     padded = np.pad(raw, ((pad, pad), (0, 0)), mode='edge')
-    #     smoothed = np.stack(
-    #         [np.convolve(padded[:, k], kernel, mode='valid') for k in range(3)],
-    #         axis=1,
-    #     )
-    #     # Re-project onto the plane perpendicular to the local superior and renormalize,
-    #     # so the smoothed anterior stays a valid unit vector of the local base.
-    #     for j, i in enumerate(valid_idx):
-    #         origin, _, superior = base_list[i]
-    #         a = smoothed[j]
-    #         a = a - np.dot(a, superior) * superior
-    #         n = np.linalg.norm(a)
-    #         if n < 1e-8:
-    #             continue
-    #         base_list[i][1] = a / n
+    # Regularize the anterior vectors across contiguous valid slices to damp noise
+    # from the spine centerline intersection before computing the cross product.
+    anterior_raw = {i: np.array(b[1], copy=True) for i, b in enumerate(base_list) if b is not None}
+    valid_idx = sorted(anterior_raw.keys())
+    if valid_idx:
+        # Smooth each component with a moving average along the slice axis.
+        window = 11
+        kernel = np.ones(window) / window
+        pad = window // 2
+        raw = np.array([anterior_raw[i] for i in valid_idx])  # shape (n_valid, 3)
+        padded = np.pad(raw, ((pad, pad), (0, 0)), mode='edge')
+        smoothed = np.stack(
+            [np.convolve(padded[:, k], kernel, mode='valid') for k in range(3)],
+            axis=1,
+        )
+        # Re-project onto the plane perpendicular to the local superior and renormalize,
+        # so the smoothed anterior stays a valid unit vector of the local base.
+        for j, i in enumerate(valid_idx):
+            origin, _, superior = base_list[i]
+            a = smoothed[j]
+            a = a - np.dot(a, superior) * superior
+            n = np.linalg.norm(a)
+            if n < 1e-8:
+                continue
+            base_list[i][1] = a / n
 
     # Second pass: compute left from the regularized anterior and freeze the tuple
     for i, b in enumerate(base_list):
@@ -180,67 +180,29 @@ def straighten_coordinates(centerline, spine_centerline, radius, debug_volume=No
         coordinates[:, :, :, i] += steps[None, :, None] * left[:, None, None]
         coordinates[:, :, :, i] += steps[None, None, :] * anterior[:, None, None]
 
-    # TODO: remove - temporary sagittal view with the orthogonal bases overlaid, so we can
-    # eyeball whether (origin, left, anterior, superior) look right along the spine.
-    if debug_volume is not None:
-        import matplotlib.pyplot as plt
-        from matplotlib.lines import Line2D
-
-        sag_slice = debug_volume[debug_volume.shape[0] // 2, :, :]  # shape (ny, nz)
-        used_bases = base_list[longest_start_idx:longest_start_idx + longest_length]
-        n_arrows = 60
-        stride = max(1, len(used_bases) // n_arrows)
-        arrow_len = max(5.0, 0.03 * sag_slice.shape[1])
-
-        fig, ax = plt.subplots(figsize=(12, 7))
-        ax.imshow(sag_slice.T, origin='lower', cmap='gray', aspect='auto')
-        for base in used_bases[::stride]:
-            if base is None:
-                continue
-            origin, left, anterior, superior = base
-            y0, z0 = float(origin[1]), float(origin[2])
-            for vec, color in [(left, 'red'), (anterior, 'blue'), (superior, 'green')]:
-                dy = vec[1] * arrow_len
-                dz = vec[2] * arrow_len
-                ax.arrow(
-                    y0, z0, dy, dz,
-                    color=color, head_width=1.2, head_length=1.8,
-                    length_includes_head=True, alpha=0.85, linewidth=0.8,
-                )
-            ax.plot(y0, z0, '.', color='yellow', markersize=2)
-
-        ax.set_xlabel('A-P (voxels)')
-        ax.set_ylabel('I-S (voxels)')
-        ax.set_title(f'Sagittal view with straightening bases{" (" + debug_tag + ")" if debug_tag else ""}')
-        ax.legend(handles=[
-            Line2D([0], [0], color='red', label='left (L)'),
-            Line2D([0], [0], color='blue', label='anterior (A)'),
-            Line2D([0], [0], color='green', label='superior (S)'),
-            Line2D([0], [0], marker='.', color='yellow', linestyle='', label='origin'),
-        ], loc='upper right', fontsize=8)
-        fig.tight_layout()
-        suffix = f'_{debug_tag}' if debug_tag else ''
-        fig.savefig(f'straightening_bases_sagittal{suffix}.png', dpi=200)
-        plt.close(fig)
-
     return coordinates, centerline_start_idx
 
 def intersect_centerline_plane(centerline, point, normal):
-    for i in range(len(centerline['position'].T)-1):
-        coord_i = centerline['position'].T[i]
-        coord_i1 = centerline['position'].T[i+1]
-        if np.dot(coord_i - point, normal) * np.dot(coord_i1 - point, normal) <= 0:
-            break
-        elif i == len(centerline['position'].T)-2:
-            return None
-    while np.dot(coord_i - coord_i1, normal) > 1e-3:
-        mid = (coord_i + coord_i1) / 2
-        if np.dot(mid - point, normal) * np.dot(coord_i - point, normal) <= 0:
-            coord_i1 = mid
-        else:
-            coord_i = mid
-    intersec_point = (coord_i + coord_i1) / 2
-    return intersec_point
+    """Intersection of a piecewise-linear centerline with the plane through `point`
+    with normal `normal`, returned so that `(intersection - point) · normal == 0`
+    (i.e. the vector from `point` to the intersection is orthogonal to `normal`).
+    Returns None if no segment of the centerline straddles the plane.
+    """
+    positions = centerline['position'].T  # (N, 3)
+    for i in range(len(positions) - 1):
+        coord_i = positions[i]
+        coord_i1 = positions[i + 1]
+        d_i = np.dot(coord_i - point, normal)
+        d_i1 = np.dot(coord_i1 - point, normal)
+        if d_i * d_i1 > 0:
+            continue
+        denom = d_i1 - d_i
+        if denom == 0:
+            # Segment lies in the plane; its start is already on it.
+            return coord_i
+        t = -d_i / denom
+        return coord_i + t * (coord_i1 - coord_i)
+    return None
 
 def _properties2d(mask, dim, radius=2):
     """

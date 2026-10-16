@@ -1086,9 +1086,15 @@ def measure_canal(seg_canal, centerline, spine_centerline, upsample=10, smooth_w
     spine_centerline_up = _scale_centerline_z(spine_centerline, upsample)
 
     # Straighten canal and spinal cord in the upsampled frame
-    canal_coords, canal_first_z_up = straighten_coordinates(canal_centerline_up, spine_centerline_up, radius=radius)
+    canal_coords, canal_first_z_up = straighten_coordinates(
+        canal_centerline_up, spine_centerline_up, radius=radius,
+        debug_volume=canal_mask_up, debug_tag='canal',
+    )
     straightened_canal = ndimage.map_coordinates(canal_mask_up, canal_coords, order=1, mode='grid-constant')
-    sc_coords, sc_first_z_up = straighten_coordinates(sc_centerline_up, spine_centerline_up, radius=radius)
+    sc_coords, sc_first_z_up = straighten_coordinates(
+        sc_centerline_up, spine_centerline_up, radius=radius,
+        debug_volume=sc_mask_up, debug_tag='sc',
+    )
     straightened_sc = ndimage.map_coordinates(sc_mask_up, sc_coords, order=1, mode='grid-constant')
 
     canal_min, canal_max = _longest_nonempty_z_segment(straightened_canal)

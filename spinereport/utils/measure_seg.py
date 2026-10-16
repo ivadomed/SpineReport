@@ -1030,7 +1030,7 @@ def measure_csf(img_data, seg_csf_data, centerline, spine_centerline):
 
     return properties
 
-def measure_canal(seg_canal, centerline, spine_centerline, upsample=10, smooth_window=9):
+def measure_canal(seg_canal, centerline, spine_centerline, upsample=1, smooth_window=10):
     '''
     Based on https://github.com/spinalcordtoolbox/spinalcordtoolbox/blob/master/spinalcordtoolbox/process_seg.py
 
@@ -1088,12 +1088,10 @@ def measure_canal(seg_canal, centerline, spine_centerline, upsample=10, smooth_w
     # Straighten canal and spinal cord in the upsampled frame
     canal_coords, canal_first_z_up = straighten_coordinates(
         canal_centerline_up, spine_centerline_up, radius=radius,
-        debug_volume=canal_mask_up, debug_tag='canal',
     )
     straightened_canal = ndimage.map_coordinates(canal_mask_up, canal_coords, order=1, mode='grid-constant')
     sc_coords, sc_first_z_up = straighten_coordinates(
         sc_centerline_up, spine_centerline_up, radius=radius,
-        debug_volume=sc_mask_up, debug_tag='sc',
     )
     straightened_sc = ndimage.map_coordinates(sc_mask_up, sc_coords, order=1, mode='grid-constant')
 

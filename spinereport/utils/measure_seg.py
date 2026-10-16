@@ -1030,7 +1030,7 @@ def measure_csf(img_data, seg_csf_data, centerline, spine_centerline):
 
     return properties
 
-def measure_canal(seg_canal, centerline, spine_centerline, upsample=10, smooth_window=1):
+def measure_canal(seg_canal, centerline, spine_centerline, upsample=10, smooth_window=30):
     '''
     Based on https://github.com/spinalcordtoolbox/spinalcordtoolbox/blob/master/spinalcordtoolbox/process_seg.py
 

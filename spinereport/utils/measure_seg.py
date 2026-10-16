@@ -1030,7 +1030,7 @@ def measure_csf(img_data, seg_csf_data, centerline, spine_centerline):
 
     return properties
 
-def measure_canal(seg_canal, centerline, spine_centerline):
+def measure_canal(seg_canal, centerline, spine_centerline, upsample=4, smooth_window=9):
     '''
     Based on https://github.com/spinalcordtoolbox/spinalcordtoolbox/blob/master/spinalcordtoolbox/process_seg.py
 
@@ -1044,6 +1044,11 @@ def measure_canal(seg_canal, centerline, spine_centerline):
     centerlines (both using the shared spine centerline to define the anterior direction),
     measured separately on their respective straightened volumes, and the per-slice
     metrics are aligned via the absolute z slice index.
+
+    To obtain less-noisy per-slice metrics, the segmentation mask and the centerlines are
+    first upsampled by `upsample` along z. Each 2D metric is computed per upsampled slice,
+    smoothed with a moving-average window of `smooth_window` upsampled slices along z, and
+    then sampled back on the original z grid (one value per original z slice).
     '''
     # Structure-agnostic keys returned by _properties2d (minus 'centroid', handled separately)
     base_keys = [
@@ -1063,57 +1068,142 @@ def measure_canal(seg_canal, centerline, spine_centerline):
     # Fetch dimensions from image.
     nx, ny, nz, nt, px, py, pz, pt = seg_canal.dim
 
-    radius = 50  # mm, radius of the straightened patch to extract around the centerline
-    canal_mask = (seg_canal.data > 0).astype(int)
-    sc_mask = (seg_canal.data == 1).astype(int)
+    radius = 50  # voxels; radius of the straightened patch extracted around the centerline
+    canal_mask = (seg_canal.data > 0).astype(np.uint8)
+    sc_mask = (seg_canal.data == 1).astype(np.uint8)
 
-    # Straighten the canal along the canal centerline
-    canal_coords, canal_first_z = straighten_coordinates(centerline, spine_centerline, radius=radius)
-    straightened_canal = ndimage.map_coordinates(canal_mask, canal_coords, order=1, mode='grid-constant')
+    # Upsample the masks along z (nearest-neighbor so the binary structure is preserved)
+    canal_mask_up = ndimage.zoom(canal_mask, (1, 1, upsample), order=0)
+    sc_mask_up = ndimage.zoom(sc_mask, (1, 1, upsample), order=0)
 
-    # Straighten the spinal cord along its own centerline
+    # Build the SC centerline on the original mask, then upsample both centerlines (and the
+    # spine centerline) along z so they live in the same voxel frame as the upsampled masks.
     seg_sc = zeros_like(seg_canal)
     seg_sc.data = sc_mask
     sc_centerline = get_centerline(seg_sc)
-    sc_coords, sc_first_z = straighten_coordinates(sc_centerline, spine_centerline, radius=radius)
-    straightened_sc = ndimage.map_coordinates(sc_mask, sc_coords, order=1, mode='grid-constant')
+    canal_centerline_up = _upsample_centerline_z(centerline, upsample)
+    sc_centerline_up = _upsample_centerline_z(sc_centerline, upsample)
+    spine_centerline_up = _scale_centerline_z(spine_centerline, upsample)
+
+    # Straighten canal and spinal cord in the upsampled frame
+    canal_coords, canal_first_z_up = straighten_coordinates(canal_centerline_up, spine_centerline_up, radius=radius)
+    straightened_canal = ndimage.map_coordinates(canal_mask_up, canal_coords, order=1, mode='grid-constant')
+    sc_coords, sc_first_z_up = straighten_coordinates(sc_centerline_up, spine_centerline_up, radius=radius)
+    straightened_sc = ndimage.map_coordinates(sc_mask_up, sc_coords, order=1, mode='grid-constant')
 
     canal_min, canal_max = _longest_nonempty_z_segment(straightened_canal)
     if canal_min is None:
         raise ValueError('No canal found in any slice after straightening.')
     sc_min, sc_max = _longest_nonempty_z_segment(straightened_sc)
 
-    # Pre-compute SC metrics keyed by absolute z slice so we can join by z below
-    sc_metrics_by_abs_z = {}
+    # Measure every upsampled slice; key by absolute upsampled z so we can smooth and join
+    canal_measurements = {}
+    for iz in range(canal_min, canal_max + 1):
+        props = _properties2d(straightened_canal[:, :, iz], [px, py])
+        if props is None:
+            continue
+        canal_measurements[canal_first_z_up + iz] = props
+
+    sc_measurements = {}
     if sc_min is not None:
         for iz in range(sc_min, sc_max + 1):
-            sc_props = _properties2d(straightened_sc[:, :, iz], [px, py])
-            if sc_props is None:
+            props = _properties2d(straightened_sc[:, :, iz], [px, py])
+            if props is None:
                 continue
-            sc_metrics_by_abs_z[sc_first_z + iz] = sc_props
+            sc_measurements[sc_first_z_up + iz] = props
 
-    # Walk canal slices and merge SC values when the absolute z matches
+    # Smooth each base metric along z over the dense (upsampled) grid
+    canal_smoothed = _smooth_measurements_along_z(canal_measurements, base_keys, window=smooth_window)
+    sc_smoothed = _smooth_measurements_along_z(sc_measurements, base_keys, window=smooth_window)
+
+    # Sample back onto the original z grid: upsampled z `u` corresponds to original z `u/upsample`,
+    # which is an integer only when `u` is a multiple of `upsample`.
     shape_properties = {key: {} for key in property_list}
-    for iz in range(canal_min, canal_max + 1):
-        canal_props = _properties2d(straightened_canal[:, :, iz], [px, py])
+    canal_z_up_list = sorted(canal_smoothed.keys())
+    if not canal_z_up_list:
+        return shape_properties
+    orig_z_start = int(np.ceil(canal_z_up_list[0] / upsample))
+    orig_z_end = int(np.floor(canal_z_up_list[-1] / upsample))
+    for original_z in range(orig_z_start, orig_z_end + 1):
+        z_up = original_z * upsample
+        canal_props = canal_smoothed.get(z_up)
         if canal_props is None:
-            print(f'Warning: error with slice {canal_first_z + iz}.')
             continue
-        abs_z = canal_first_z + iz
-
         for base_key, canal_key in zip(base_keys, canal_keys):
-            shape_properties[canal_key][abs_z] = canal_props[base_key]
-        shape_properties['canal_centroid'][abs_z] = canal_props['centroid']
-
-        sc_props = sc_metrics_by_abs_z.get(abs_z)
+            shape_properties[canal_key][original_z] = canal_props[base_key]
+        shape_properties['canal_centroid'][original_z] = canal_measurements[z_up]['centroid']
+        sc_props = sc_smoothed.get(z_up)
         if sc_props is not None:
             for base_key, sc_key in zip(base_keys, sc_keys):
-                shape_properties[sc_key][abs_z] = sc_props[base_key]
+                shape_properties[sc_key][original_z] = sc_props[base_key]
         else:
             for sc_key in sc_keys:
-                shape_properties[sc_key][abs_z] = -1
+                shape_properties[sc_key][original_z] = -1
 
     return shape_properties
+
+
+def _upsample_centerline_z(centerline, factor):
+    """Resample a fitted centerline on a z grid denser by `factor`.
+
+    Positions are expressed in the upsampled voxel frame (z multiplied by `factor`); the
+    x/y derivatives are divided by `factor` so the tangent vector keeps pointing in the
+    same physical direction once re-normalized by `straighten_coordinates`.
+    """
+    pos = centerline['position']
+    der = centerline['derivative']
+    z_orig = pos[2].astype(float)
+    z_up = np.arange(int(round(z_orig[0])) * factor, int(round(z_orig[-1])) * factor + 1)
+    z_eval_orig = z_up / factor
+    pos_up = np.array([
+        np.interp(z_eval_orig, z_orig, pos[0]),
+        np.interp(z_eval_orig, z_orig, pos[1]),
+        z_up.astype(float),
+    ])
+    dx_interp = np.interp(z_eval_orig, z_orig, der[0])
+    dy_interp = np.interp(z_eval_orig, z_orig, der[1])
+    der_up = np.array([
+        dx_interp / factor,
+        dy_interp / factor,
+        np.ones_like(z_up, dtype=float),
+    ])
+
+    return {'position': pos_up, 'derivative': der_up}
+
+
+def _scale_centerline_z(centerline, factor):
+    """Rescale a centerline's z axis to the upsampled voxel frame without adding samples.
+
+    Used for the spine centerline, where only the position's z coordinate matters inside
+    `intersect_centerline_plane`.
+    """
+    pos = centerline['position']
+    der = centerline['derivative']
+    pos_up = np.array([pos[0], pos[1], pos[2].astype(float) * factor])
+    der_up = np.array([der[0] / factor, der[1] / factor, np.ones_like(pos[2], dtype=float)])
+    return {'position': pos_up, 'derivative': der_up}
+
+
+def _smooth_measurements_along_z(measurements, base_keys, window):
+    """Moving-average smoothing of each scalar metric along z, with edge padding.
+
+    `measurements` is {abs_z: {base_key: value}}; the output has the same keys and the
+    same z grid, with each scalar in `base_keys` replaced by its smoothed value. Non-scalar
+    entries (e.g. 'centroid') are passed through untouched.
+    """
+    if not measurements:
+        return {}
+    z_sorted = sorted(measurements.keys())
+    pad = window // 2
+    kernel = np.ones(window) / window
+    out = {z: dict(measurements[z]) for z in z_sorted}
+    for base_key in base_keys:
+        values = np.array([measurements[z][base_key] for z in z_sorted], dtype=float)
+        padded = np.pad(values, pad, mode='edge')
+        smoothed = np.convolve(padded, kernel, mode='valid')
+        for z, v in zip(z_sorted, smoothed):
+            out[z][base_key] = float(v)
+    return out
 
 
 def _structure_key(base_key, structure):

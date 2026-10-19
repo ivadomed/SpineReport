@@ -13,7 +13,7 @@ from spinereport.utils.measure_seg import measure_seg_mp
 def _add_group_seg_args(parser, group):
     '''Add the per-group segmentation-source flags (--{group}-*-dir).'''
     parser.add_argument(
-        f'--{group}-tss', f'-{group[0]}', type=Path, default=None,
+        f'--{group}-dir', f'-{group[0]}', type=Path, default=None,
         help=f'The output folder where totalspineseg outputs are located for the {group} group.'
     )
     parser.add_argument(

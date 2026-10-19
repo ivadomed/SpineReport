@@ -99,7 +99,7 @@ def find_symmetry_vector_binary(mask, center, angle_step_deg=1.0, refine_window_
     return best_angle, vector_2d, best_sum
 
 def straighten_coordinates(centerline, spine_centerline, radius):
-    # Identify longest canal portion with complete base available
+    # First pass: per-slice origin, superior, raw anterior (left deferred until anterior is regularized)
     base_list = []
     for i, (origin, normal) in enumerate(zip(centerline['position'].T, centerline['derivative'].T)):
         superior = normal / np.linalg.norm(normal)  # in the S direction
@@ -112,10 +112,43 @@ def straighten_coordinates(centerline, spine_centerline, radius):
 
         anterior = anterior_point - origin
         anterior = anterior / np.linalg.norm(anterior)  # in the A direction
-        left = np.cross(superior, anterior)  # in the L direction
 
-        base_list.append((origin, left, anterior, superior))
-    
+        base_list.append([origin, anterior, superior])
+
+    # Regularize the anterior vectors across contiguous valid slices to damp noise
+    # from the spine centerline intersection before computing the cross product.
+    anterior_raw = {i: np.array(b[1], copy=True) for i, b in enumerate(base_list) if b is not None}
+    valid_idx = sorted(anterior_raw.keys())
+    if valid_idx:
+        # Smooth each component with a moving average along the slice axis.
+        window = 11
+        kernel = np.ones(window) / window
+        pad = window // 2
+        raw = np.array([anterior_raw[i] for i in valid_idx])  # shape (n_valid, 3)
+        padded = np.pad(raw, ((pad, pad), (0, 0)), mode='edge')
+        smoothed = np.stack(
+            [np.convolve(padded[:, k], kernel, mode='valid') for k in range(3)],
+            axis=1,
+        )
+        # Re-project onto the plane perpendicular to the local superior and renormalize,
+        # so the smoothed anterior stays a valid unit vector of the local base.
+        for j, i in enumerate(valid_idx):
+            origin, _, superior = base_list[i]
+            a = smoothed[j]
+            a = a - np.dot(a, superior) * superior
+            n = np.linalg.norm(a)
+            if n < 1e-8:
+                continue
+            base_list[i][1] = a / n
+
+    # Second pass: compute left from the regularized anterior and freeze the tuple
+    for i, b in enumerate(base_list):
+        if b is None:
+            continue
+        origin, anterior, superior = b
+        left = np.cross(superior, anterior)  # in the L direction
+        base_list[i] = (origin, left, anterior, superior)
+
     # Find longest portion of the centerline with complete base available
     longest_start_idx = None
     longest_length = 0
@@ -137,7 +170,7 @@ def straighten_coordinates(centerline, spine_centerline, radius):
             longest_length = length
             longest_start_idx = current_start_idx
     if longest_start_idx is None:
-        raise ValueError("Cannot project spine centerline on orhtonal planes of the centerline.")
+        raise ValueError("Cannot project spine centerline on orthogonal planes of the centerline.")    
     
     coordinates = np.zeros((3, 2*radius+1, 2*radius+1, longest_length), dtype=float)
     centerline_start_idx = centerline['position'].T[longest_start_idx,2].astype(int)
@@ -146,166 +179,105 @@ def straighten_coordinates(centerline, spine_centerline, radius):
         coordinates[:, :, :, i] = origin[:, None, None]
         coordinates[:, :, :, i] += steps[None, :, None] * left[:, None, None]
         coordinates[:, :, :, i] += steps[None, None, :] * anterior[:, None, None]
+
     return coordinates, centerline_start_idx
 
 def intersect_centerline_plane(centerline, point, normal):
-    for i in range(len(centerline['position'].T)-1):
-        coord_i = centerline['position'].T[i]
-        coord_i1 = centerline['position'].T[i+1]
-        if np.dot(coord_i - point, normal) * np.dot(coord_i1 - point, normal) <= 0:
-            break
-        elif i == len(centerline['position'].T)-2:
-            return None
-    while np.dot(coord_i - coord_i1, normal) > 1e-3:
-        mid = (coord_i + coord_i1) / 2
-        if np.dot(mid - point, normal) * np.dot(coord_i - point, normal) <= 0:
-            coord_i1 = mid
-        else:
-            coord_i = mid
-    intersec_point = (coord_i + coord_i1) / 2
-    return intersec_point
-
-def _properties2d(canal, spinalcord, dim, radius=2):
+    """Intersection of a piecewise-linear centerline with the plane through `point`
+    with normal `normal`, returned so that `(intersection - point) · normal == 0`
+    (i.e. the vector from `point` to the intersection is orthogonal to `normal`).
+    Returns None if no segment of the centerline straddles the plane.
     """
-    Compute shape property of the input 2D image. Accounts for partial volume information.
-    :param canal: 2D input canal image in uint8 or float (weighted for partial volume) that has a single object.
-    :param spinalcord: 2D input spinal cord image in uint8 or float (weighted for partial volume).
+    positions = centerline['position'].T  # (N, 3)
+    for i in range(len(positions) - 1):
+        coord_i = positions[i]
+        coord_i1 = positions[i + 1]
+        d_i = np.dot(coord_i - point, normal)
+        d_i1 = np.dot(coord_i1 - point, normal)
+        if d_i * d_i1 > 0:
+            continue
+        denom = d_i1 - d_i
+        if denom == 0:
+            # Segment lies in the plane; its start is already on it.
+            return coord_i
+        t = -d_i / denom
+        return coord_i + t * (coord_i1 - coord_i)
+    return None
+
+def _properties2d(mask, dim, radius=2):
+    """
+    Compute shape properties of a single 2D structure (canal OR spinal cord). Accounts for partial volume information.
+    :param mask: 2D input mask in uint8 or float (weighted for partial volume) with a single object.
     :param dim: [px, py]: Physical dimension of the image (in mm). X,Y respectively correspond to AP,RL.
     :param radius: Radius of the cylindrical mask used for diameter computation.
-    :return:
+    :return: dict of structure-agnostic metrics, or None if the slice is empty.
     """
     # Check if slice is empty
-    if np.sum(canal) == 0:
+    if np.sum(mask) == 0:
         print('The slice is empty.')
         return None
 
-    # Extract canal slice center of mass
-    x_pos = canal.shape[0]//2
-    y_pos = canal.shape[1]//2
-    canal_pos = np.array([x_pos, y_pos])
-    
-    # Create vector v from canal_pos to spine pos and normalize it
+    # Patch center (slice center of mass is at the patch center by construction of the straightening)
+    x_pos = mask.shape[0]//2
+    y_pos = mask.shape[1]//2
+    centroid = np.array([x_pos, y_pos])
+
+    # Create vector v (AP direction) and orthogonal w (RL direction)
     v = np.array([0, 1])
     v = v / np.linalg.norm(v)
-
-    # Create w an orthogonal vector to v
     w = np.array([1, 0])
 
-    # Compute AP diameter along v 
-    v_mask = cylindrical_mask(shape=canal.shape, p0=canal_pos, v=v, radius=radius) # Create cylindrical mask along v
-    AP_mask = v_mask*canal
+    # Compute AP diameter along v
+    v_mask = cylindrical_mask(shape=mask.shape, p0=centroid, v=v, radius=radius)
+    AP_mask = v_mask*mask
     AP_coords = np.argwhere(AP_mask)
-    projections = np.dot(AP_coords, v)  # Project onto vector
+    projections = np.dot(AP_coords, v)
     if projections.any():
-        diameter_AP_canal = np.mean([np.max(AP_coords[AP_coords[:,0]==row][:,1]) - np.min(AP_coords[AP_coords[:,0]==row][:,1]) for row in np.unique(AP_coords[:, 0])])*dim[0] # AP length = max - min projection
+        diameter_AP = np.mean([np.max(AP_coords[AP_coords[:,0]==row][:,1]) - np.min(AP_coords[AP_coords[:,0]==row][:,1]) for row in np.unique(AP_coords[:, 0])])*dim[0]
     else:
-        diameter_AP_canal = 0
-    
+        diameter_AP = 0
+
     # Compute RL diameter along w
-    w_mask = cylindrical_mask(shape=canal.shape, p0=canal_pos, v=w, radius=radius) # Create cylindrical mask along w
-    RL_mask = w_mask*canal
+    w_mask = cylindrical_mask(shape=mask.shape, p0=centroid, v=w, radius=radius)
+    RL_mask = w_mask*mask
     RL_coords = np.argwhere(RL_mask)
-    projections = np.dot(RL_coords, w)  # Project onto vector
+    projections = np.dot(RL_coords, w)
     if projections.any():
-        diameter_RL_canal = np.mean([np.max(RL_coords[RL_coords[:,1]==col][:,0]) - np.min(RL_coords[RL_coords[:,1]==col][:,0]) for col in np.unique(RL_coords[:, 1])])*dim[1] # RL length = max - min projection
+        diameter_RL = np.mean([np.max(RL_coords[RL_coords[:,1]==col][:,0]) - np.min(RL_coords[RL_coords[:,1]==col][:,0]) for col in np.unique(RL_coords[:, 1])])*dim[1]
     else:
-        diameter_RL_canal = 0
+        diameter_RL = 0
 
-    # Compute symmetry score
-    asymmetry_canal_R_L = 2 * np.sum(canal * np.flip(canal, axis=0)) / (np.sum(canal) + np.sum(np.flip(canal, axis=0)) + 1e-8)
+    # R/L symmetry score
+    asymmetry_R_L = 2 * np.sum(mask * np.flip(mask, axis=0)) / (np.sum(mask) + np.sum(np.flip(mask, axis=0)) + 1e-8)
 
-    # Compute area
-    area_canal = np.sum(canal) * dim[0] * dim[1]
-    right_area_canal = np.sum(canal[:canal.shape[0]//2+1, :]) * dim[0] * dim[1]
-    left_area_canal = np.sum(canal[canal.shape[0]//2:, :]) * dim[0] * dim[1]
+    # Area
+    area = np.sum(mask) * dim[0] * dim[1]
+    right_area = np.sum(mask[:mask.shape[0]//2+1, :]) * dim[0] * dim[1]
+    left_area = np.sum(mask[mask.shape[0]//2:, :]) * dim[0] * dim[1]
 
-    # Compute eccentricity
-    if diameter_AP_canal < diameter_RL_canal:
-        eccentricity_canal = np.sqrt(1 - diameter_AP_canal**2/diameter_RL_canal**2) if diameter_RL_canal > 0 else 0
+    # Eccentricity
+    if diameter_AP < diameter_RL:
+        eccentricity = np.sqrt(1 - diameter_AP**2/diameter_RL**2) if diameter_RL > 0 else 0
     else:
-        eccentricity_canal = -np.sqrt(1 - diameter_RL_canal**2/diameter_AP_canal**2) if diameter_AP_canal > 0 else 0
+        eccentricity = -np.sqrt(1 - diameter_RL**2/diameter_AP**2) if diameter_AP > 0 else 0
 
     # Deal with https://github.com/spinalcordtoolbox/spinalcordtoolbox/issues/2307
     if any(x in platform.platform() for x in ['Darwin-15', 'Darwin-16']):
-        solidity_canal = -1
+        solidity = -1
     else:
-        solidity_canal = compute_solidity_2d(canal)
+        solidity = compute_solidity_2d(mask)
 
-    # Compute spinal cord metrics if not empty else set metrics to -1
-    if not np.sum(spinalcord) == 0:
-        # Extract spinalcord slice center of mass
-        spinalcord_pos = canal_pos.copy()
-
-        # Compute AP diameter along v
-        v_mask = cylindrical_mask(shape=spinalcord.shape, p0=spinalcord_pos, v=v, radius=radius) # Create cylindrical mask along v
-        AP_mask = v_mask*spinalcord
-        AP_coords = np.argwhere(AP_mask)
-        projections = np.dot(AP_coords, v)  # Project onto vector
-        if projections.any():
-            diameter_AP_spinalcord = np.mean([np.max(AP_coords[AP_coords[:,0]==row][:,1]) - np.min(AP_coords[AP_coords[:,0]==row][:,1]) for row in np.unique(AP_coords[:, 0])])*dim[0] # AP length = max - min projection
-        else:
-            diameter_AP_spinalcord = 0
-
-        # Compute RL diameter along w
-        w_mask = cylindrical_mask(shape=spinalcord.shape, p0=spinalcord_pos, v=w, radius=radius) # Create cylindrical mask along w
-        RL_mask = w_mask*spinalcord
-        RL_coords = np.argwhere(RL_mask)
-        projections = np.dot(RL_coords, w)  # Project onto vector
-        if projections.any():
-            diameter_RL_spinalcord = np.mean([np.max(RL_coords[RL_coords[:,1]==col][:,0]) - np.min(RL_coords[RL_coords[:,1]==col][:,0]) for col in np.unique(RL_coords[:, 1])])*dim[1] # RL length = max - min projection
-        else:
-            diameter_RL_spinalcord = 0
-
-        # Compute symmetry score
-        asymmetry_spinalcord_R_L = 2 * np.sum(spinalcord * np.flip(spinalcord, axis=0)) / (np.sum(spinalcord) + np.sum(np.flip(spinalcord, axis=0)) + 1e-8)
-
-        # Compute area 
-        area_spinalcord = np.sum(spinalcord) * dim[0] * dim[1]
-        right_area_spinalcord = np.sum(spinalcord[:spinalcord.shape[0]//2+1, :]) * dim[0] * dim[1]
-        left_area_spinalcord = np.sum(spinalcord[spinalcord.shape[0]//2:, :]) * dim[0] * dim[1]
-
-        # Compute eccentricity 
-        if diameter_AP_spinalcord < diameter_RL_spinalcord:
-            eccentricity_spinalcord = np.sqrt(1 - diameter_AP_spinalcord**2/diameter_RL_spinalcord**2) if diameter_RL_spinalcord > 0 else 0
-        else:
-            eccentricity_spinalcord = -np.sqrt(1 - diameter_RL_spinalcord**2/diameter_AP_spinalcord**2) if diameter_AP_spinalcord > 0 else 0
-
-        # Deal with https://github.com/spinalcordtoolbox/spinalcordtoolbox/issues/2307
-        if any(x in platform.platform() for x in ['Darwin-15', 'Darwin-16']):
-            solidity_spinalcord = -1
-        else:
-            solidity_spinalcord = compute_solidity_2d(spinalcord)
-    else:
-        area_spinalcord = -1
-        right_area_spinalcord = -1
-        left_area_spinalcord = -1
-        diameter_AP_spinalcord = -1
-        diameter_RL_spinalcord = -1
-        eccentricity_spinalcord = -1
-        solidity_spinalcord = -1
-        asymmetry_spinalcord_R_L = -1
-
-    # Fill up dictionary
-    properties = {
-        'area_canal': area_canal,
-        'area_spinalcord': area_spinalcord,
-        'right_area_canal': right_area_canal,
-        'left_area_canal': left_area_canal,
-        'right_area_spinalcord': right_area_spinalcord,
-        'left_area_spinalcord': left_area_spinalcord,
-        'diameter_AP_canal': diameter_AP_canal,
-        'diameter_AP_spinalcord': diameter_AP_spinalcord,
-        'diameter_RL_canal': diameter_RL_canal,
-        'diameter_RL_spinalcord': diameter_RL_spinalcord,
-        'canal_centroid': canal_pos,
-        'eccentricity_canal': eccentricity_canal,
-        'eccentricity_spinalcord': eccentricity_spinalcord,
-        'solidity_canal': solidity_canal,  # convexity measure
-        'solidity_spinalcord': solidity_spinalcord,  # convexity measure
-        'asymmetry_canal_R_L': asymmetry_canal_R_L,
-        'asymmetry_spinalcord_R_L': asymmetry_spinalcord_R_L
+    return {
+        'area': area,
+        'right_area': right_area,
+        'left_area': left_area,
+        'diameter_AP': diameter_AP,
+        'diameter_RL': diameter_RL,
+        'centroid': centroid,
+        'eccentricity': eccentricity,
+        'solidity': solidity,  # convexity measure
+        'asymmetry_R_L': asymmetry_R_L,
     }
-    return properties
 
 def cylindrical_mask(shape, p0, v, radius):
     """

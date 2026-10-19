@@ -14,7 +14,7 @@ import cv2
 from sklearn.mixture import GaussianMixture
 import colorsys
 
-from spinereport.utils.image import Image, resample_nib, zeros_like
+from spinereport.utils.image import Image, zeros_like
 from spinereport.utils.utils import find_symmetry_vector_binary, straighten_coordinates, _properties2d, project_point_centerline, get_centerline, fastest_dilation_edt
 from skimage.morphology import ball, binary_dilation
 import totalspineseg.resources as resources
@@ -524,7 +524,8 @@ def _measure_seg(
     
 def measure_seg(img, seg, label, mapping):
     '''
-    Compute morphometric measurements of the spinal canal, the intervertebral discs and the neural foramen
+    Compute morphometric measurements of the spinal canal, the intervertebral discs, the vertebrae and the neural foramen. 
+    All input images are expected to be in RPI orientation and resampled to isotropic resolution (1 mm).
     '''
     # Fetch unique segmentation values
     unique_seg = np.unique(seg.data)
@@ -532,9 +533,7 @@ def measure_seg(img, seg, label, mapping):
     # Resample image to isotropic resolution
     nx, ny, nz, nt, px, py, pz, pt = seg.dim
     pr = min([px, py, pz])
-    seg = resample_nib(seg, new_size=[pr, pr, pr], new_size_type='mm', interpolation='nn', verbose=False)
-    img = resample_nib(img, new_size=[pr, pr, pr], new_size_type='mm', interpolation='linear', verbose=False)
-
+    
     # Apply N4 algorithm to correct for intensity non uniformity
     img.data = n4_bias_field_correction(img.data, seg.data > 0)
 
@@ -1031,7 +1030,7 @@ def measure_csf(img_data, seg_csf_data, centerline, spine_centerline):
 
     return properties
 
-def measure_canal(seg_canal, centerline, spine_centerline):
+def measure_canal(seg_canal, centerline, spine_centerline, upsample=1, smooth_window=1):
     '''
     Based on https://github.com/spinalcordtoolbox/spinalcordtoolbox/blob/master/spinalcordtoolbox/process_seg.py
 
@@ -1040,70 +1039,206 @@ def measure_canal(seg_canal, centerline, spine_centerline):
     Extract canal metrics using:
     - canal segmentation
     - spine segmentation
+
+    The canal and the spinal cord are straightened independently along their own
+    centerlines (both using the shared spine centerline to define the anterior direction),
+    measured separately on their respective straightened volumes, and the per-slice
+    metrics are aligned via the absolute z slice index.
+
+    To obtain less-noisy per-slice metrics, the segmentation mask and the centerlines are
+    first upsampled by `upsample` along z. Each 2D metric is computed per upsampled slice,
+    smoothed with a moving-average window of `smooth_window` upsampled slices along z, and
+    then sampled back on the original z grid (one value per original z slice).
     '''
-    # List properties
-    property_list = [
-        'area_canal',
-        'right_area_canal',
-        'left_area_canal',
-        'area_spinalcord',
-        'right_area_spinalcord',
-        'left_area_spinalcord',
-        'diameter_AP_canal',
-        'diameter_AP_spinalcord',
-        'diameter_RL_canal',
-        'diameter_RL_spinalcord',
-        'canal_centroid',
-        'eccentricity_canal',
-        'eccentricity_spinalcord',
-        'solidity_canal',
-        'solidity_spinalcord',
-        'asymmetry_canal_R_L',
-        'asymmetry_spinalcord_R_L'
+    # Structure-agnostic keys returned by _properties2d (minus 'centroid', handled separately)
+    base_keys = [
+        'area',
+        'right_area',
+        'left_area',
+        'diameter_AP',
+        'diameter_RL',
+        'eccentricity',
+        'solidity',
+        'asymmetry_R_L',
     ]
+    canal_keys = [_structure_key(k, 'canal') for k in base_keys]
+    sc_keys = [_structure_key(k, 'spinalcord') for k in base_keys]
+    property_list = canal_keys + sc_keys + ['canal_centroid']
+
     # Fetch dimensions from image.
     nx, ny, nz, nt, px, py, pz, pt = seg_canal.dim
 
-    # Straighten canal and spinalcord to extract metrics
-    radius = 50 # mm, radius of the straightened patch to extract around the centerline
-    canal_seg = (seg_canal.data > 0).astype(int)
-    sc_seg = (seg_canal.data == 1).astype(int)
-    straightened_coordinates, first_z_index = straighten_coordinates(centerline, spine_centerline, radius=radius)
-    straightened_canal = ndimage.map_coordinates(canal_seg, straightened_coordinates, order=1, mode='grid-constant')
-    straightened_spinalcord = ndimage.map_coordinates(sc_seg, straightened_coordinates, order=1, mode='grid-constant')    
+    radius = 50  # voxels; radius of the straightened patch extracted around the centerline
+    canal_mask = (seg_canal.data > 0).astype(np.uint8)
+    sc_mask = (seg_canal.data == 1).astype(np.uint8)
 
-    # Pick longest segment with non empty slices
-    empty_slices = np.array([np.sum(straightened_canal[:, :, iz]) == 0 for iz in range(straightened_canal.shape[2])])
-    if np.all(empty_slices):
+    # Upsample the masks along z (nearest-neighbor so the binary structure is preserved)
+    canal_mask_up = ndimage.zoom(canal_mask, (1, 1, upsample), order=0)
+    sc_mask_up = ndimage.zoom(sc_mask, (1, 1, upsample), order=0)
+
+    # Build the SC centerline on the original mask, then upsample both centerlines (and the
+    # spine centerline) along z so they live in the same voxel frame as the upsampled masks.
+    seg_sc = zeros_like(seg_canal)
+    seg_sc.data = sc_mask
+    sc_centerline = get_centerline(seg_sc)
+    canal_centerline_up = _upsample_centerline_z(centerline, upsample)
+    sc_centerline_up = _upsample_centerline_z(sc_centerline, upsample)
+    spine_centerline_up = _scale_centerline_z(spine_centerline, upsample)
+
+    # Straighten canal and spinal cord in the upsampled frame
+    canal_coords, canal_first_z_up = straighten_coordinates(
+        canal_centerline_up, spine_centerline_up, radius=radius,
+    )
+    straightened_canal = ndimage.map_coordinates(canal_mask_up, canal_coords, order=1, mode='grid-constant')
+    sc_coords, sc_first_z_up = straighten_coordinates(
+        sc_centerline_up, spine_centerline_up, radius=radius,
+    )
+    straightened_sc = ndimage.map_coordinates(sc_mask_up, sc_coords, order=1, mode='grid-constant')
+
+    canal_min, canal_max = _longest_nonempty_z_segment(straightened_canal)
+    if canal_min is None:
         raise ValueError('No canal found in any slice after straightening.')
-    elif not np.any(empty_slices):
-        min_index = np.argwhere(straightened_canal>0)[:,2].min()
-        max_index = np.argwhere(straightened_canal>0)[:,2].max()
-    else:
-        empty_slices_indices = np.where(empty_slices)[0]+1
-        if not empty_slices_indices[0] == 0:
-            empty_slices_indices = np.insert(empty_slices_indices, 0, 0)
-        if not empty_slices_indices[-1] == straightened_canal.shape[-1] - 1:
-            empty_slices_indices = np.insert(empty_slices_indices, len(empty_slices_indices), straightened_canal.shape[-1] -1)
-        segments = [empty_slices_indices[i+1]-empty_slices_indices[i] for i in range(len(empty_slices_indices)-1)]
-        longest_segment_idx = np.argmax(segments)
-        min_index = empty_slices_indices[longest_segment_idx]
-        max_index = empty_slices_indices[longest_segment_idx+1]
-    
-    # Loop across the S-I slices
-    shape_properties = {key: {} for key in property_list}
-    for iz in range(min_index, max_index + 1):
-        # Calculate shape metrics
-        shape_property = _properties2d(straightened_canal[:, :, iz], straightened_spinalcord[:, :, iz], [px, py])
+    sc_min, sc_max = _longest_nonempty_z_segment(straightened_sc)
 
-        if shape_property is not None:
-            # Loop across properties and assign values for function output
-            for property_name in property_list:
-                shape_properties[property_name][first_z_index+iz] = shape_property[property_name]
+    # Measure every upsampled slice; key by absolute upsampled z so we can smooth and join
+    canal_measurements = {}
+    for iz in range(canal_min, canal_max + 1):
+        props = _properties2d(straightened_canal[:, :, iz], [px, py])
+        if props is None:
+            continue
+        canal_measurements[canal_first_z_up + iz] = props
+
+    sc_measurements = {}
+    if sc_min is not None:
+        for iz in range(sc_min, sc_max + 1):
+            props = _properties2d(straightened_sc[:, :, iz], [px, py])
+            if props is None:
+                continue
+            sc_measurements[sc_first_z_up + iz] = props
+
+    # Smooth each base metric along z over the dense (upsampled) grid
+    canal_smoothed = _smooth_measurements_along_z(canal_measurements, base_keys, window=smooth_window)
+    sc_smoothed = _smooth_measurements_along_z(sc_measurements, base_keys, window=smooth_window)
+
+    # Sample back onto the original z grid: upsampled z `u` corresponds to original z `u/upsample`,
+    # which is an integer only when `u` is a multiple of `upsample`.
+    shape_properties = {key: {} for key in property_list}
+    canal_z_up_list = sorted(canal_smoothed.keys())
+    if not canal_z_up_list:
+        return shape_properties
+    orig_z_start = int(np.ceil(canal_z_up_list[0] / upsample))
+    orig_z_end = int(np.floor(canal_z_up_list[-1] / upsample))
+    for original_z in range(orig_z_start, orig_z_end + 1):
+        z_up = original_z * upsample
+        canal_props = canal_smoothed.get(z_up)
+        if canal_props is None:
+            continue
+        for base_key, canal_key in zip(base_keys, canal_keys):
+            shape_properties[canal_key][original_z] = canal_props[base_key]
+        shape_properties['canal_centroid'][original_z] = canal_measurements[z_up]['centroid']
+        sc_props = sc_smoothed.get(z_up)
+        if sc_props is not None:
+            for base_key, sc_key in zip(base_keys, sc_keys):
+                shape_properties[sc_key][original_z] = sc_props[base_key]
         else:
-            print(f'Warning: error with slice {first_z_index+iz}.')
+            for sc_key in sc_keys:
+                shape_properties[sc_key][original_z] = -1
 
     return shape_properties
+
+
+def _upsample_centerline_z(centerline, factor):
+    """Resample a fitted centerline on a z grid denser by `factor`.
+
+    Positions are expressed in the upsampled voxel frame (z multiplied by `factor`); the
+    x/y derivatives are divided by `factor` so the tangent vector keeps pointing in the
+    same physical direction once re-normalized by `straighten_coordinates`.
+    """
+    pos = centerline['position']
+    der = centerline['derivative']
+    z_orig = pos[2].astype(float)
+    z_up = np.arange(int(round(z_orig[0])) * factor, int(round(z_orig[-1])) * factor + 1)
+    z_eval_orig = z_up / factor
+    pos_up = np.array([
+        np.interp(z_eval_orig, z_orig, pos[0]),
+        np.interp(z_eval_orig, z_orig, pos[1]),
+        z_up.astype(float),
+    ])
+    dx_interp = np.interp(z_eval_orig, z_orig, der[0])
+    dy_interp = np.interp(z_eval_orig, z_orig, der[1])
+    der_up = np.array([
+        dx_interp / factor,
+        dy_interp / factor,
+        np.ones_like(z_up, dtype=float),
+    ])
+
+    return {'position': pos_up, 'derivative': der_up}
+
+
+def _scale_centerline_z(centerline, factor):
+    """Rescale a centerline's z axis to the upsampled voxel frame without adding samples.
+
+    Used for the spine centerline, where only the position's z coordinate matters inside
+    `intersect_centerline_plane`.
+    """
+    pos = centerline['position']
+    der = centerline['derivative']
+    pos_up = np.array([pos[0], pos[1], pos[2].astype(float) * factor])
+    der_up = np.array([der[0] / factor, der[1] / factor, np.ones_like(pos[2], dtype=float)])
+    return {'position': pos_up, 'derivative': der_up}
+
+
+def _smooth_measurements_along_z(measurements, base_keys, window):
+    """Moving-average smoothing of each scalar metric along z, with edge padding.
+
+    `measurements` is {abs_z: {base_key: value}}; the output has the same keys and the
+    same z grid, with each scalar in `base_keys` replaced by its smoothed value. Non-scalar
+    entries (e.g. 'centroid') are passed through untouched.
+    """
+    if not measurements:
+        return {}
+    z_sorted = sorted(measurements.keys())
+    pad = window // 2
+    kernel = np.ones(window) / window
+    out = {z: dict(measurements[z]) for z in z_sorted}
+    for base_key in base_keys:
+        values = np.array([measurements[z][base_key] for z in z_sorted], dtype=float)
+        padded = np.pad(values, pad, mode='edge')
+        smoothed = np.convolve(padded, kernel, mode='valid')
+        for z, v in zip(z_sorted, smoothed):
+            out[z][base_key] = float(v)
+    return out
+
+
+def _structure_key(base_key, structure):
+    """Attach a structure tag to a base metric key, preserving the historical layout.
+
+    Most keys get a trailing suffix (`area` → `area_canal`), but the R/L asymmetry key
+    keeps the structure tag in the middle (`asymmetry_R_L` → `asymmetry_canal_R_L`).
+    """
+    if base_key == 'asymmetry_R_L':
+        return f'asymmetry_{structure}_R_L'
+    return f'{base_key}_{structure}'
+
+
+def _longest_nonempty_z_segment(volume):
+    """Return (min_index, max_index) of the longest contiguous run of non-empty slices
+    along the last axis. Returns (None, None) if every slice is empty.
+    """
+    empty_slices = np.array([np.sum(volume[:, :, iz]) == 0 for iz in range(volume.shape[2])])
+    if np.all(empty_slices):
+        return None, None
+    if not np.any(empty_slices):
+        nonzero_z = np.argwhere(volume > 0)[:, 2]
+        return int(nonzero_z.min()), int(nonzero_z.max())
+    empty_slices_indices = np.where(empty_slices)[0] + 1
+    if empty_slices_indices[0] != 0:
+        empty_slices_indices = np.insert(empty_slices_indices, 0, 0)
+    if empty_slices_indices[-1] != volume.shape[-1] - 1:
+        empty_slices_indices = np.insert(empty_slices_indices, len(empty_slices_indices), volume.shape[-1] - 1)
+    segments = [empty_slices_indices[i + 1] - empty_slices_indices[i] for i in range(len(empty_slices_indices) - 1)]
+    longest_idx = int(np.argmax(segments))
+    return int(empty_slices_indices[longest_idx]), int(empty_slices_indices[longest_idx + 1])
 
 def measure_vertebra(img_data, seg_vert_data, seg_canal_data, canal_centerline, pr):
     '''
@@ -1914,9 +2049,9 @@ def smooth(y, box_pts):
     return y_smooth
 
 if __name__ == '__main__':
-    img_path = '/Users/nathan/Desktop/split_08_out_iso/input/08-localizer_fast_FA3_TR10_BW240_5slc_15meas_p2_1_meas013_0000.nii.gz'
-    seg_path = '/Users/nathan/Desktop/split_08_out_iso/step2_output/08-localizer_fast_FA3_TR10_BW240_5slc_15meas_p2_1_meas013.nii.gz'
-    label_path = '/Users/nathan/Desktop/split_08_out_iso/step1_levels/08-localizer_fast_FA3_TR10_BW240_5slc_15meas_p2_1_meas013.nii.gz'
+    img_path = '/Users/nathan/Desktop/out-iso/input/sub-006_ses-headUp_T2w_0000.nii.gz'
+    seg_path = '/Users/nathan/Desktop/out-iso/step2_output/sub-006_ses-headUp_T2w.nii.gz'
+    label_path = '/Users/nathan/Desktop/out-iso/step1_levels/sub-006_ses-headUp_T2w.nii.gz'
 
     ofolder_path = 'test'
 

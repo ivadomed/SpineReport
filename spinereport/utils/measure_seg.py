@@ -1030,7 +1030,8 @@ def measure_csf(img_data, seg_csf_data, centerline, spine_centerline):
 
     return properties
 
-def measure_canal(seg_canal, centerline, spine_centerline, upsample=1, smooth_window=1, inplane_step=0.25):
+def measure_canal(seg_canal, centerline, spine_centerline, upsample=1, smooth_window=1, inplane_step=0.25,
+                  diameter_band_mm=1.0):
     '''
     Based on https://github.com/spinalcordtoolbox/spinalcordtoolbox/blob/master/spinalcordtoolbox/process_seg.py
 
@@ -1054,6 +1055,11 @@ def measure_canal(seg_canal, centerline, spine_centerline, upsample=1, smooth_wi
     `inplane_step` voxel: a step below 1 removes the voxel-size quantization of the
     diameters and the area. Area is the partial-volume sum of the interpolated mask;
     diameters and solidity are measured on the mask thresholded at 0.5.
+
+    Each diameter is the mean extent of the lines within +/- `diameter_band_mm` of the
+    centerline. A wide band underestimates diameters (lines away from the centre cut
+    shorter chords of the cord ellipse, ~0.7 mm on RL for a +/- 2 mm band on a thoracic
+    cord); a narrow one is noisier.
     '''
     # Structure-agnostic keys returned by _properties2d (minus 'centroid', handled separately)
     base_keys = [
@@ -1096,7 +1102,7 @@ def measure_canal(seg_canal, centerline, spine_centerline, upsample=1, smooth_wi
     # every `inplane_step` voxel and measured one at a time (a fine grid over the whole
     # straightened volume would not fit in memory).
     pixel_dim = [px * inplane_step, py * inplane_step]
-    band = 2 / inplane_step  # diameter band: 2 voxels whatever the in-plane step
+    band = diameter_band_mm / pixel_dim[0]  # diameter band half-width, in pixels
 
     def straighten_and_measure(mask_up, centerline_up):
         bases, first_z_up = straightening_bases(centerline_up, spine_centerline_up)

@@ -1,18 +1,11 @@
-<table>
-  <tr>
-    <td>
-      <h1>SpineReport</h1>
-      <p>
-        <a href="https://arxiv.org/abs/2606.10021"><img src="https://img.shields.io/badge/preprint-arXiv:2606.10021-orange" alt="preprint"></a>
-        <a href="https://ivadomed.github.io/SpineReport/"><img src="https://img.shields.io/badge/docs-GitHub_Pages-blue" alt="Docs"></a>
-      </p>
-      <p>Automated extraction of spinal morphometrics and generation of structured radiological reports from MRI data.</p>
-    </td>
-    <td align="right" width="190">
-      <img src="spinereport/resources/imgs/logo.png" alt="SpineReport logo" height="170">
-    </td>
-  </tr>
-</table>
+# SpineReport
+<img src="spinereport/resources/imgs/logo.png" alt="SpineReport logo" height="170" align="right">
+
+[![preprint](https://img.shields.io/badge/preprint-arXiv:2606.10021-orange)](https://arxiv.org/abs/2606.10021)
+[![Docs](https://img.shields.io/badge/docs-GitHub_Pages-blue)](https://ivadomed.github.io/SpineReport/)
+
+Automated extraction of spinal morphometrics and generation of structured radiological reports from MRI data. Each report provides quantitative measurements of the spinal cord, spinal canal, vertebrae, intervertebral discs, neural foramina, and cerebrospinal fluid (CSF) for an individual subject, alongside comparisons with a control population. Examples of the generated reports are presented below.
+<br clear="right">
 
 | Report description |
 | :---: |

@@ -1,4 +1,4 @@
-# SpineReport
+# SpineReport <img src="spinereport/resources/imgs/logo.png" alt="SpineReport logo" height="40" align="top">
 [![preprint](https://img.shields.io/badge/preprint-arXiv:2606.10021-orange)](https://arxiv.org/abs/2606.10021)
 [![Docs](https://img.shields.io/badge/docs-GitHub_Pages-blue)](https://ivadomed.github.io/SpineReport/)
 

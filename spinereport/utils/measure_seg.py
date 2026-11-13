@@ -15,7 +15,7 @@ from sklearn.mixture import GaussianMixture
 import colorsys
 
 from spinereport.utils.image import Image, zeros_like
-from spinereport.utils.utils import find_symmetry_vector_binary, straighten_coordinates, _properties2d, project_point_centerline, get_centerline, fastest_dilation_edt
+from spinereport.utils.utils import find_symmetry_vector_binary, straighten_coordinates, straightening_bases, plane_coordinates, _properties2d, project_point_centerline, get_centerline, fastest_dilation_edt
 from skimage.morphology import ball, binary_dilation
 import totalspineseg.resources as resources
 
@@ -1030,7 +1030,8 @@ def measure_csf(img_data, seg_csf_data, centerline, spine_centerline):
 
     return properties
 
-def measure_canal(seg_canal, centerline, spine_centerline, upsample=1, smooth_window=1):
+def measure_canal(seg_canal, centerline, spine_centerline, upsample=1, smooth_window=1, inplane_step=0.25,
+                  diameter_band_mm=1.0):
     '''
     Based on https://github.com/spinalcordtoolbox/spinalcordtoolbox/blob/master/spinalcordtoolbox/process_seg.py
 
@@ -1049,6 +1050,16 @@ def measure_canal(seg_canal, centerline, spine_centerline, upsample=1, smooth_wi
     first upsampled by `upsample` along z. Each 2D metric is computed per upsampled slice,
     smoothed with a moving-average window of `smooth_window` upsampled slices along z, and
     then sampled back on the original z grid (one value per original z slice).
+
+    Each orthogonal plane is sampled (trilinear interpolation of the mask) every
+    `inplane_step` voxel: a step below 1 removes the voxel-size quantization of the
+    diameters and the area. Area is the partial-volume sum of the interpolated mask;
+    diameters and solidity are measured on the mask thresholded at 0.5.
+
+    Each diameter is the mean extent of the lines within +/- `diameter_band_mm` of the
+    centerline. A wide band underestimates diameters (lines away from the centre cut
+    shorter chords of the cord ellipse, ~0.7 mm on RL for a +/- 2 mm band on a thoracic
+    cord); a narrow one is noisier.
     '''
     # Structure-agnostic keys returned by _properties2d (minus 'centroid', handled separately)
     base_keys = [
@@ -1069,8 +1080,10 @@ def measure_canal(seg_canal, centerline, spine_centerline, upsample=1, smooth_wi
     nx, ny, nz, nt, px, py, pz, pt = seg_canal.dim
 
     radius = 50  # voxels; radius of the straightened patch extracted around the centerline
-    canal_mask = (seg_canal.data > 0).astype(np.uint8)
-    sc_mask = (seg_canal.data == 1).astype(np.uint8)
+    # Float masks: map_coordinates returns the input dtype, so a uint8 mask would round the
+    # interpolated values back to 0/1 and lose the partial-volume information.
+    canal_mask = (seg_canal.data > 0).astype(np.float32)
+    sc_mask = (seg_canal.data == 1).astype(np.float32)
 
     # Upsample the masks along z (nearest-neighbor so the binary structure is preserved)
     canal_mask_up = ndimage.zoom(canal_mask, (1, 1, upsample), order=0)
@@ -1085,36 +1098,33 @@ def measure_canal(seg_canal, centerline, spine_centerline, upsample=1, smooth_wi
     sc_centerline_up = _upsample_centerline_z(sc_centerline, upsample)
     spine_centerline_up = _scale_centerline_z(spine_centerline, upsample)
 
-    # Straighten canal and spinal cord in the upsampled frame
-    canal_coords, canal_first_z_up = straighten_coordinates(
-        canal_centerline_up, spine_centerline_up, radius=radius,
-    )
-    straightened_canal = ndimage.map_coordinates(canal_mask_up, canal_coords, order=1, mode='grid-constant')
-    sc_coords, sc_first_z_up = straighten_coordinates(
-        sc_centerline_up, spine_centerline_up, radius=radius,
-    )
-    straightened_sc = ndimage.map_coordinates(sc_mask_up, sc_coords, order=1, mode='grid-constant')
+    # Straighten and measure canal and spinal cord in the upsampled frame. Planes are sampled
+    # every `inplane_step` voxel and measured one at a time (a fine grid over the whole
+    # straightened volume would not fit in memory).
+    pixel_dim = [px * inplane_step, py * inplane_step]
+    band = diameter_band_mm / pixel_dim[0]  # diameter band half-width, in pixels
 
-    canal_min, canal_max = _longest_nonempty_z_segment(straightened_canal)
-    if canal_min is None:
+    def straighten_and_measure(mask_up, centerline_up):
+        bases, first_z_up = straightening_bases(centerline_up, spine_centerline_up)
+        props, nonempty = [], []
+        for base in bases:
+            plane = ndimage.map_coordinates(mask_up, plane_coordinates(base, radius, inplane_step),
+                                            order=1, mode='grid-constant')
+            nonempty.append(plane.sum() > 0)
+            props.append(_properties2d(plane, pixel_dim, radius=band) if nonempty[-1] else None)
+        z_min, z_max = _longest_nonempty_z_segment(np.array(nonempty, float)[None, None, :])
+        measurements = {}
+        if z_min is not None:
+            for iz in range(z_min, z_max + 1):
+                if props[iz] is not None:
+                    props[iz]['centroid'] = props[iz]['centroid'] * inplane_step  # patch centre, in voxels
+                    measurements[first_z_up + iz] = props[iz]
+        return measurements, z_min is not None
+
+    canal_measurements, canal_found = straighten_and_measure(canal_mask_up, canal_centerline_up)
+    if not canal_found:
         raise ValueError('No canal found in any slice after straightening.')
-    sc_min, sc_max = _longest_nonempty_z_segment(straightened_sc)
-
-    # Measure every upsampled slice; key by absolute upsampled z so we can smooth and join
-    canal_measurements = {}
-    for iz in range(canal_min, canal_max + 1):
-        props = _properties2d(straightened_canal[:, :, iz], [px, py])
-        if props is None:
-            continue
-        canal_measurements[canal_first_z_up + iz] = props
-
-    sc_measurements = {}
-    if sc_min is not None:
-        for iz in range(sc_min, sc_max + 1):
-            props = _properties2d(straightened_sc[:, :, iz], [px, py])
-            if props is None:
-                continue
-            sc_measurements[sc_first_z_up + iz] = props
+    sc_measurements, _ = straighten_and_measure(sc_mask_up, sc_centerline_up)
 
     # Smooth each base metric along z over the dense (upsampled) grid
     canal_smoothed = _smooth_measurements_along_z(canal_measurements, base_keys, window=smooth_window)

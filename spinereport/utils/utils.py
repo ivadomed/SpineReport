@@ -98,7 +98,38 @@ def find_symmetry_vector_binary(mask, center, angle_step_deg=1.0, refine_window_
     vector_2d = np.array([np.cos(best_angle), np.sin(best_angle)], dtype=np.float64)
     return best_angle, vector_2d, best_sum
 
-def straighten_coordinates(centerline, spine_centerline, radius):
+def straighten_coordinates(centerline, spine_centerline, radius, step=1.0):
+    """Voxel coordinates of the planes orthogonal to `centerline`, stacked along z.
+
+    :param radius: half-width of each plane, in voxels.
+    :param step: in-plane sampling step, in voxels (< 1 samples the planes on a finer grid).
+    :return: coordinates (3, n, n, nz) with n = 2 * round(radius / step) + 1, and the
+        z index of the first plane.
+    """
+    bases, centerline_start_idx = straightening_bases(centerline, spine_centerline)
+    n = 2 * int(round(radius / step)) + 1
+    coordinates = np.zeros((3, n, n, len(bases)), dtype=float)
+    for i, base in enumerate(bases):
+        coordinates[:, :, :, i] = plane_coordinates(base, radius, step)
+    return coordinates, centerline_start_idx
+
+
+def plane_coordinates(base, radius, step=1.0):
+    """Voxel coordinates (3, n, n) of one orthogonal plane; axis 1 = left, axis 2 = anterior."""
+    origin, left, anterior, _ = base
+    n_half = int(round(radius / step))
+    steps = np.linspace(start=-n_half * step, stop=n_half * step, num=2 * n_half + 1)
+    coordinates = np.empty((3, steps.size, steps.size), dtype=float)
+    coordinates[:] = origin[:, None, None]
+    coordinates += steps[None, :, None] * left[:, None, None]
+    coordinates += steps[None, None, :] * anterior[:, None, None]
+    return coordinates
+
+
+def straightening_bases(centerline, spine_centerline):
+    """Local frames (origin, left, anterior, superior) of the planes orthogonal to `centerline`,
+    over the longest run of centerline points where the spine centerline gives an anterior
+    direction. Returns (list of frames, z index of the first frame)."""
     # First pass: per-slice origin, superior, raw anterior (left deferred until anterior is regularized)
     base_list = []
     for i, (origin, normal) in enumerate(zip(centerline['position'].T, centerline['derivative'].T)):
@@ -172,15 +203,8 @@ def straighten_coordinates(centerline, spine_centerline, radius):
     if longest_start_idx is None:
         raise ValueError("Cannot project spine centerline on orthogonal planes of the centerline.")    
     
-    coordinates = np.zeros((3, 2*radius+1, 2*radius+1, longest_length), dtype=float)
     centerline_start_idx = centerline['position'].T[longest_start_idx,2].astype(int)
-    for i, (origin, left, anterior, superior) in enumerate(base_list[longest_start_idx:longest_start_idx+longest_length]):
-        steps = np.linspace(start=-radius, stop=+radius, num=2*radius+1)
-        coordinates[:, :, :, i] = origin[:, None, None]
-        coordinates[:, :, :, i] += steps[None, :, None] * left[:, None, None]
-        coordinates[:, :, :, i] += steps[None, None, :] * anterior[:, None, None]
-
-    return coordinates, centerline_start_idx
+    return base_list[longest_start_idx:longest_start_idx+longest_length], centerline_start_idx
 
 def intersect_centerline_plane(centerline, point, normal):
     """Intersection of a piecewise-linear centerline with the plane through `point`
@@ -204,17 +228,22 @@ def intersect_centerline_plane(centerline, point, normal):
         return coord_i + t * (coord_i1 - coord_i)
     return None
 
-def _properties2d(mask, dim, radius=2):
+def _properties2d(mask, dim, radius=2, threshold=0.5, border_mm=1.0):
     """
     Compute shape properties of a single 2D structure (canal OR spinal cord). Accounts for partial volume information.
     :param mask: 2D input mask in uint8 or float (weighted for partial volume) with a single object.
     :param dim: [px, py]: Physical dimension of the image (in mm). X,Y respectively correspond to AP,RL.
-    :param radius: Radius of the cylindrical mask used for diameter computation.
+    :param radius: half-width (in pixels) of the band of lines, around the structure's centroid,
+        over which the diameters are averaged.
+    :param threshold: area uses the partial-volume values of `mask`; diameters and solidity are
+        measured on `mask > threshold` (the soft tail of an interpolated mask would widen them).
+    :param border_mm: the area is summed within this distance of the thresholded structure,
+        to keep its partial-volume border but not other objects of the patch.
     :return: dict of structure-agnostic metrics, or None if the slice is empty.
     """
     # Check if slice is empty
-    if np.sum(mask) == 0:
-        print('The slice is empty.')
+    binary = mask > threshold
+    if np.sum(mask) == 0 or not binary.any():
         return None
 
     # Patch center (slice center of mass is at the patch center by construction of the straightening)
@@ -222,30 +251,33 @@ def _properties2d(mask, dim, radius=2):
     y_pos = mask.shape[1]//2
     centroid = np.array([x_pos, y_pos])
 
-    # Create vector v (AP direction) and orthogonal w (RL direction)
-    v = np.array([0, 1])
-    v = v / np.linalg.norm(v)
-    w = np.array([1, 0])
+    # Keep only the structure at the patch centre (the largest one if the centre falls outside
+    # every structure), so other objects in the patch do not count in the metrics.
+    labels, _ = ndimage.label(binary)
+    keep = labels[x_pos, y_pos]
+    if keep == 0:
+        keep = 1 + int(np.argmax(np.bincount(labels.ravel())[1:]))
+    binary = labels == keep
+    # Partial-volume mask restricted to that structure and its soft border (`border_mm` around it)
+    border = max(1, int(round(border_mm / dim[0])))
+    mask = np.where(ndimage.binary_dilation(binary, iterations=border), mask, 0)
 
-    # Compute AP diameter along v
-    v_mask = cylindrical_mask(shape=mask.shape, p0=centroid, v=v, radius=radius)
-    AP_mask = v_mask*mask
-    AP_coords = np.argwhere(AP_mask)
-    projections = np.dot(AP_coords, v)
-    if projections.any():
-        diameter_AP = np.mean([np.max(AP_coords[AP_coords[:,0]==row][:,1]) - np.min(AP_coords[AP_coords[:,0]==row][:,1]) for row in np.unique(AP_coords[:, 0])])*dim[0]
-    else:
-        diameter_AP = 0
+    # Diameters: mean extent (first to last pixel, inclusive) of the structure along AP (axis 1)
+    # and RL (axis 0), over the lines within +/- `radius` pixels of the structure's centroid.
+    ci, cj = ndimage.center_of_mass(binary)
 
-    # Compute RL diameter along w
-    w_mask = cylindrical_mask(shape=mask.shape, p0=centroid, v=w, radius=radius)
-    RL_mask = w_mask*mask
-    RL_coords = np.argwhere(RL_mask)
-    projections = np.dot(RL_coords, w)
-    if projections.any():
-        diameter_RL = np.mean([np.max(RL_coords[RL_coords[:,1]==col][:,0]) - np.min(RL_coords[RL_coords[:,1]==col][:,0]) for col in np.unique(RL_coords[:, 1])])*dim[1]
-    else:
-        diameter_RL = 0
+    def mean_extent(axis, centre):
+        lines = np.arange(int(np.ceil(centre - radius)), int(np.floor(centre + radius)) + 1)
+        lines = lines[(lines >= 0) & (lines < binary.shape[1 - axis])]
+        extents = []
+        for u in lines:
+            idx = np.flatnonzero(binary[u, :] if axis == 1 else binary[:, u])
+            if len(idx):
+                extents.append(idx[-1] - idx[0] + 1)
+        return np.mean(extents) if extents else 0
+
+    diameter_AP = mean_extent(1, ci) * dim[0]
+    diameter_RL = mean_extent(0, cj) * dim[1]
 
     # R/L symmetry score
     asymmetry_R_L = 2 * np.sum(mask * np.flip(mask, axis=0)) / (np.sum(mask) + np.sum(np.flip(mask, axis=0)) + 1e-8)
@@ -265,7 +297,7 @@ def _properties2d(mask, dim, radius=2):
     if any(x in platform.platform() for x in ['Darwin-15', 'Darwin-16']):
         solidity = -1
     else:
-        solidity = compute_solidity_2d(mask)
+        solidity = compute_solidity_2d(binary)
 
     return {
         'area': area,

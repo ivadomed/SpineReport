@@ -1,10 +1,18 @@
-<img src="spinereport/resources/imgs/logo.png" alt="SpineReport logo" height="170" align="right">
-
-# SpineReport
-[![preprint](https://img.shields.io/badge/preprint-arXiv:2606.10021-orange)](https://arxiv.org/abs/2606.10021)
-[![Docs](https://img.shields.io/badge/docs-GitHub_Pages-blue)](https://ivadomed.github.io/SpineReport/)
-
-Automated extraction of spinal morphometrics and generation of structured radiological reports from MRI data.
+<table>
+  <tr>
+    <td>
+      <h1>SpineReport</h1>
+      <p>
+        <a href="https://arxiv.org/abs/2606.10021"><img src="https://img.shields.io/badge/preprint-arXiv:2606.10021-orange" alt="preprint"></a>
+        <a href="https://ivadomed.github.io/SpineReport/"><img src="https://img.shields.io/badge/docs-GitHub_Pages-blue" alt="Docs"></a>
+      </p>
+      <p>Automated extraction of spinal morphometrics and generation of structured radiological reports from MRI data.</p>
+    </td>
+    <td align="right" width="190">
+      <img src="spinereport/resources/imgs/logo.png" alt="SpineReport logo" height="170">
+    </td>
+  </tr>
+</table>
 
 | Report description |
 | :---: |
